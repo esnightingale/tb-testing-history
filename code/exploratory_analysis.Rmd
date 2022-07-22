@@ -1,0 +1,658 @@
+---
+title: "Spatial variation in TB testing history"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Questions:
+
+> How does reported history of TB investigation (by sputum sample or
+> chest x-ray) vary between surveyed neighbourhoods? + What are the
+> characteristics of neighbourhoods with low prevalence of prior
+> testing?
+
+> Do neighbourhoods with low testing prevalence coincide with those
+> having low reporting rates (case notification:prevalence ratios)?
+
+```{r setup}
+
+library(tidyverse)
+library(magrittr)
+library(ggmap)
+library(sf)
+library(raster)
+library(ggregplot)
+library(BlantyreTBEpi)
+library(patchwork)
+
+theme_set(theme_minimal())
+
+figdir <- "testing history/figures"
+
+# Fix default ggsave background
+ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
+
+# Source model coeff plot
+source(here::here("testing history","code","Efxplot.R"), echo=TRUE)
+
+```
+
+## Data
+
+Data source is the extended questionnaire responses from the prevalence
+survey. Variables of interest are ever having provided a sputum sample
+for testing and ever having received a chest x-ray. These are combined
+into a single outcome of having ever undergone investigation for TB.
+
+The spatial unit of interest is cluster, the neighbourhood areas in
+which the survey was conducted.
+
+```{r load_data}
+
+#-----------#
+# Geography #
+
+# Cluster/HSA polygons and clinic locations
+clust <- readRDS(here::here("data","clusters.rds")) %>% # Survey clusters
+  mutate(clustid = as.numeric(gsub("c","",cluster)))
+data("clinics", package="BlantyreTBEpi") # TB clinics
+data("hsas", package="BlantyreTBEpi") # Health service areas
+
+# Update CRS type
+clust <- st_transform(clust, st_crs(4326))
+clinics <- st_transform(clinics, st_crs(4326))
+hsas <- st_transform(hsas, st_crs(4326))
+
+# Extract a base map layer to the extent of cluster polygons
+bb <- st_bbox(clust)
+e <- c(bb$xmin, bb$ymin, bb$xmax, bb$ymax)
+names(e) <- c("left","bottom","right","top")
+blt_lines <- get_map(location = e, source = "stamen", maptype = "terrain", zoom = 12)
+
+#------------#
+# Population #
+
+# Worldpop Malawi population count raster
+pop.path <- here::here("data","mwi_ppp_2020_UNadj.tif")
+popMLW <- raster::raster(x = pop.path)
+
+# Crop to same map extent
+popBLT <- raster::crop(popMLW, raster::extent(bb))
+# plot(popBLT)
+
+# Reformat for later plotting
+popBLT_spdf <- as(popBLT, "SpatialPixelsDataFrame")
+popBLT_df <- as.data.frame(popBLT_spdf)
+
+#-------------------------#
+# Routine TB surveillance #
+
+data("cnrs", package="BlantyreTBEpi")    # Case notifications per HSA
+cnrs <- st_transform(cnrs, st_crs(4326))
+
+
+data("cluster_cases_sf", package="BlantyreTBEpi")    # Case notifications per HSA
+tb_hsa <- hsas %>% 
+  full_join(cluster_cases_sf)
+  
+#-------------------#
+# Prevalence survey #
+
+# Cluster prevalence (from Mcewen's paper)
+prev_clust <- readRDS(here::here("data","dat_scale.rds"))
+
+# Individual data
+dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data/survey_clean.rds") %>% 
+  dplyr::select(today, ind_id, s02cl_id, 
+                # Household data
+                hh_id, gps_lat, gps_lng, gps_alt, gps_acc, hh_per_room, pov_score,h22hh_step, 
+                # Individual data
+                s07sex, sex, s09age, agegp, hiv_combined,
+                # Current TB 
+                any_cough, any_tb_symp,
+                # Known TB
+                s60tb_anyone, s62tb_famtb, s65tb_died,
+                
+                ## EXTENDED ONLY ##
+                
+                # Ever TB test/diagnosis
+                s50tb_medtest, s51tb_spnum, s53tb_evrxray, s54tb_xraynum, 
+                s56tb_evrtst, 
+                # self-assessed sick, current trt
+                s30tb_sick, s57tb_treat,
+                # Service usage
+                s111serv_hosp, s111serv_hosp_period) %>%
+  mutate(wealth_quant = ntile(pov_score, 6),
+         wealth_cut = cut(pov_score, 6),
+         any_tb_symp = as.factor(any_tb_symp),
+         current_trt = factor((s57tb_treat == 1), 
+                                 levels = c(FALSE,TRUE), 
+                                 labels = c("No","Yes")),
+         incl_extended = !is.na(s50tb_medtest),
+         test_history = factor((s50tb_medtest == 1 | s53tb_evrxray == 1), 
+                               levels = c(FALSE,TRUE), 
+                               labels = c("No","Yes"))) %>% 
+  # Count participants per cluster
+  group_by(s02cl_id) %>% 
+  mutate(clust_N_tot = n(),
+         clust_N_ext = sum(incl_extended)) %>% 
+  ungroup() 
+
+summary(dat_all$pov_score)
+#    Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# -23.619  -6.981  -4.892  -6.246  -2.633   4.063     107 
+
+summary(dat_all$wealth_quant)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+#  1.0     2.0     3.0     3.5     5.0     6.0     107 
+
+ggplot(dat_all, aes(pov_score, fill = as.factor(wealth_quant))) +
+  geom_histogram()
+ggplot(dat_all, aes(pov_score, fill = wealth_cut)) +
+  geom_histogram()
+
+# Subset to extended questionnaire
+dat <- dat_all %>% 
+  filter(incl_extended)
+
+```
+
+Identify which HSAs in each cluster from the centroid points.
+
+```{r clust_hsas}
+sf::sf_use_s2(FALSE)
+
+hsas %>% 
+  st_centroid() %>% 
+  st_join(clust, join = st_within) %>% 
+  st_drop_geometry() -> hsa_clust
+
+hsas %>% 
+  full_join(hsa_clust) -> hsa_clust
+
+plot(clust["clustid"])
+plot(hsa_clust["clustid"])
+
+# Exclude HSAs outside survey clusters
+hsa_clust <- hsa_clust %>% 
+  filter(!is.na(cluster)) 
+
+plot(hsa_clust["clustid"])
+
+hsa_clust_lookup <- st_drop_geometry(hsa_clust)
+
+```
+
+### TB burden per cluster 
+
+Calculate and map out TB burden per cluster
++ Case notification rates
++ Prevalence of: symptoms, treatment, confirmed/test positive
+
+```{r map_tb_clust}
+
+dat_all %>% 
+  group_by(s02cl_id) %>% 
+  summarise(clust_N_tot = unique(clust_N_tot),
+            clust_N_ext = unique(clust_N_ext),
+            # All participants
+            symp = sum(any_tb_symp == "Yes"),
+            knowtst = sum(s60tb_anyone == 1, na.rm = T),
+            knowtrt = sum(s62tb_famtb == 1, na.rm = T),
+            knowdied = sum(s65tb_died == 1, na.rm = T),
+            # Extended only
+            trt = sum(s57tb_treat == 1, na.rm = T),
+            selfrep = sum(grepl("Agree",s30tb_sick))) %>%
+  mutate(across(symp:knowdied, function(x) x/clust_N_tot, .names = "prev_{.col}"),
+         across(trt:selfrep, function(x) x/clust_N_ext, .names = "prev_{.col}")) %>% 
+  ungroup() -> dat_clust
+
+prev_clust %>% 
+  dplyr::select(cluster_number, clusteradults, n_prev_tbcases, total,total_tbcases_2019) %>% 
+  full_join(dat_clust, by = c("cluster_number" ="s02cl_id")) -> dat_clust
+
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_clust)) +
+  geom_sf(aes(fill = total_tbcases_2019*1000/total), alpha = 0.5) +
+  labs(fill = "per 1,000",
+       title = "Case notification rate of TB per cluster") +
+  scale_fill_viridis_c() -> map_cnr
+
+ggmap(blt_lines, 
+      base_layer = ggplot(prev_clust)) +
+  geom_sf(aes(fill = n_prev_tbcases*1000/clusteradults), alpha = 0.5) +
+  labs(fill = "per 1,000",
+       title = "Survey prevalence") +
+  scale_fill_viridis_c() -> map_surv_prev
+
+# ggmap(blt_lines, 
+#       base_layer = ggplot(dat_clust)) +
+#   geom_sf(aes(fill = n_prev_tbcases*100/clust_N_tot), alpha = 0.5) +
+#   labs(fill = "%",
+#        title = "Survey prevalence of TB per cluster") +
+#   scale_fill_viridis_c() -> map_surv_prev2
+
+map_cnr + map_surv_prev #+ map_surv_prev2
+ggsave(here::here(figdir, "cluster_cnr_prev.png"), height = 5, width = 12)
+
+# Other indicators of disease burden from survey
+vars <- names(dplyr::select(st_drop_geometry(dat_clust), prev_symp:prev_selfrep))
+titles <- c("Any self-reported symptoms",
+                                     "Know someone tested in last 12m",
+                                     "Know someone treated in last 12m",
+                                     "Know someone who died of TB",
+                                     "Currently on treatment",
+                                     "Self-identified as likely currently sick")
+
+plot_clust <- function(prevvar, title = ""){
+  ggmap(blt_lines, 
+      base_layer = ggplot(dat_clust)) +
+  geom_sf(aes(fill = !!sym(prevvar)*100), alpha = 0.5) +
+  labs(fill = "%",
+       title = title) +
+  scale_fill_viridis_c() -> p
+  
+  return(p)
+}
+
+plot.list <- purrr::map2(vars, titles, plot_clust)
+plot.arrange <- gridExtra::grid.arrange(grobs = plot.list, ncol = 2)
+ggsave(here::here(figdir, "cluster_burden_inds.png"),plot.arrange, height = 15, width = 12)
+
+```
+
+### Summary
+
+`r nrow(dat_all)` survey participants in total, of whom
+`r sum(dat_all$incl_extended)` responded to the extended questionnaire.
+`r sum(dat$test_history == "Yes")` report ever testing, via sputum
+sample or x-ray.
+
+```{r summ_testing}
+
+dat %>% 
+  mutate(sputum = factor(s50tb_medtest == 1, labels = c("Yes","No")),
+         xray = factor(s53tb_evrxray == 1, labels = c("Yes","No"))) %>% 
+  group_by(sputum, xray) %>% 
+  count() 
+
+```
+
+### Missingness
+
+Check missingness in age and sex for later standardisation by these
+variables:
+
+```{r miss_age_sex}
+
+dat %>% 
+  group_by(is.na(sex), is.na(agegp)) %>% 
+  count()
+
+dat %>% 
+  dplyr::select(hh_per_room, pov_score, wealth_quant) %>% 
+  summarise(across(everything(), function(x) sum(is.na(x))))
+
+dat_nona <- filter(dat, !is.na(sex) & !is.na(agegp))
+
+```
+
+-   `r sum(is.na(dat$agegp))` respondents with unknown age
+    (`r round(sum(is.na(dat$agegp))*100/nrow(dat),2)`%).
+    
+
+## Analysis
+
+### Summarise test history by individual/household characteristics
+
+```{r summ_bychars}
+
+# Summarise factors by test history
+tab_fac <- function(Var1, nm){
+  
+  tab <- table(Var1, dat$test_history)
+  print(round(prop.table(tab)*100, 2))
+  print(chisq.test(tab, simulate.p.value = T))
+  
+  # Add NA factor level for output
+  Var1 <- addNA(Var1)
+  tab <- table(Var1, dat$test_history)
+  tab %>% 
+    as.data.frame() %>% 
+    mutate(Var = nm) %>% 
+    dplyr::select(Var, everything()) %>% 
+    return()
+}
+
+fact_vars <- list(sex = dat$sex,
+                  agegp = dat$agegp,
+                  hiv = dat$hiv_combined,
+                  wealth_quant = dat$wealth_quant,
+                  self_assess = dat$h22hh_step,
+                  anyone_tb = dat$s60tb_anyone, 
+                  fam_tb = dat$s62tb_famtb, 
+                  died_tb = dat$s65tb_died)
+tabs1 <- purrr::map2(fact_vars, names(fact_vars), tab_fac)
+
+# Continuous poverty score
+t.test(pov_score ~ test_history, dat)
+dat$pov_score_cat <- cut(dat$pov_score, 
+                         breaks = quantile(dat$pov_score, c(0,0.25,0.5,0.75, 1), na.rm = T),
+                         include.lowest = TRUE)
+tab_pov <- table(dat$pov_score_cat, dat$test_history)
+round(prop.table(tab_pov)*100, 2)
+
+chisq.test(tab_pov)
+
+tab_pov <- tab_pov %>% 
+    as.data.frame() %>% 
+    mutate(Var = "poverty_score") %>% 
+    dplyr::select(Var, everything()) 
+
+tab <- bind_rows(tabs1) %>% 
+  bind_rows(as.data.frame(tab_pov)) %>% 
+  pivot_wider(names_from = "Var2", values_from = "Freq") %>%
+  mutate(N = No + Yes,
+         summ_no = paste0(No, " (",round(No*100/(No + Yes),1), ")"),
+         summ_yes = paste0(Yes, " (",round(Yes*100/(No + Yes),1), ")")) %>% 
+  dplyr::select(Var, Var1, N, summ_yes)
+write.csv(tab, here::here("testing history/output", "tab1.csv"), row.names = FALSE)
+
+# by_pov <- dat %>% 
+#   group_by(test_history) %>% 
+#   summarise(Var1 = "Poverty score",
+#             value = paste0(round(mean(pov_score, na.rm = T),2),
+#                               " (",
+#                               round(sd(pov_score, na.rm = TRUE),1), ")")) %>% 
+#   pivot_wider(names_from = "test_history", values_from = "value") 
+# write.csv(by_pov, here::here("testing history/output", "tab1a.csv"), row.names = FALSE)
+
+```
+
+Plot trend over continuous variables to check if groupings are appropriate
+
+```{r plot_bychars}
+
+ggplot(dat, aes(s09age, as.numeric(test_history))) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Age",y = "Test history")
+
+ggplot(dat, aes(s09age, as.numeric(test_history), col = sex)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Age",y = "Test history")
+
+ggplot(dat, aes(s09age, as.numeric(test_history), col = hiv_combined)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Age",y = "Test history")
+
+dat %>% 
+  filter(sex == "Male") %>% 
+  ggplot(aes(s09age, as.numeric(test_history), col = hiv_combined)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") + 
+  labs(x = "Age",y = "Test history")
+
+dat %>% 
+  filter(sex == "Female") %>% 
+  ggplot(aes(s09age, as.numeric(test_history), col = hiv_combined)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm") + 
+  labs(x = "Age",y = "Test history")
+
+ggplot(dat, aes(s09age, as.numeric(test_history), col = (s65tb_died == 2))) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Age",y = "Test history")
+
+ggplot(dat, aes(pov_score, as.numeric(test_history))) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Poverty score",y = "Test history")
+
+ggplot(dat, aes(pov_score, as.numeric(test_history), col = sex)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Poverty score",y = "Test history")
+
+ggplot(dat, aes(pov_score, as.numeric(test_history), col = hiv_combined)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Poverty score",y = "Test history")
+
+ggplot(dat, aes(pov_score, as.numeric(test_history), col = (s65tb_died == 2))) +
+  geom_point(alpha = 0.1) +
+  geom_smooth() + 
+  labs(x = "Poverty score",y = "Test history")
+
+
+```
+Suggest fewer age breaks at 30, 40, 50.
+
+
+### Summarise test history by cluster
+
+```{r summ_byclust}
+
+dat %>% 
+  group_by(s02cl_id) %>% 
+  summarise(n = n(),
+            x = sum(test_history == "Yes"),
+            perc_test_history = 100*Hmisc::binconf(x, n)[1],
+            ci_low = 100*Hmisc::binconf(x, n)[2],
+            ci_high = 100*Hmisc::binconf(x, n)[3]) -> by_clust
+
+summary(by_clust)
+
+```
+
+An average of `r mean(by_clust$perc_test_history)`% respondents reported
+ever being tested per cluster (range \`r
+range(by_clust\$perc_test_history)\`\`%).
+
+```{r plot_byclust}
+
+# Overall mean + CI:
+overall <- 100*round(Hmisc::binconf(x = sum(dat$test_history == "Yes"), n = nrow(dat)),2)
+# PointEst Lower Upper
+#       16    14    17
+
+ggplot(by_clust, aes(x = perc_test_history)) +
+  geom_histogram(binwidth = 2) +
+  geom_vline(aes(xintercept = mean(perc_test_history)), lty = "dashed") +
+  labs(title = "Percentage of respondents reporting previous sputum test or chest x-ray, per cluster",
+       # subtitle = paste0("Mean = ", round(mean(by_clust$prop_test_history),2)),
+       x = "",
+       y = "Frequency")
+ggsave(here::here(figdir,"hist_perc_history_byclust.png"), 
+       height = 6, width = 8)
+
+
+ggplot(by_clust, aes(x = as.factor(s02cl_id), y = perc_test_history, ymin = ci_low, ymax = ci_high)) +
+  geom_point() +
+  geom_errorbar(width = 0.2) + 
+  labs(title = "Percentage (with 95% CI) of respondents reporting previous sputum test or chest x-ray, by cluster",
+       subtitle = paste0("Overall mean = ", overall[1],
+                         " [", overall[2],"-", overall[3],"]"),
+       x = "Survey cluster",
+       y = "")
+ggsave(here::here(figdir,"perc_history_byclust.png"), 
+       height = 6, width = 15)
+
+```
+
+```{r map_byclust}
+
+dat %>% 
+  group_by(s02cl_id) %>% 
+  summarise(N = n(),
+            N_test_hist = sum(test_history == "Yes")) %>% 
+  mutate(p_test_hist = N_test_hist/N) -> dat_clust
+
+summary(dat_clust$p_test_hist)
+ #   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ # 0.0000  0.1133  0.1500  0.1510  0.2047  0.2750 
+
+hist(dat_clust$p_test_hist)
+
+dat %>% 
+  filter(s02cl_id %in% c(5, 62) & test_history =="Yes") %>% 
+  View()
+
+clust %>% 
+  full_join(dat_clust, by = c("clustid" = "s02cl_id")) -> dat_clust
+
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_clust)) +
+  geom_sf(aes(fill = p_test_hist*100, lty = "Survey cluster"), alpha = 0.5) +
+  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  scale_shape_manual(values = 15) +
+  scale_fill_gradient2(low = "red", mid = "white", high = "blue",
+                       # midpoint = mean(dat_clust$p_test_hist*100, na.rm = T),
+                       midpoint = mean(dat$test_history == "Yes")*100) +
+  labs(x = "", y = "", 
+       fill = "%",
+       lty = "", pch = "", 
+       subtitle = "% respondents reporting previous test or x-ray, per cluster",
+       caption = paste0("Colour scale centred at overall rate of ", round(mean(dat$test_history == "Yes")*100),"%")) 
+
+ggsave(here::here(figdir,"test_xray_history_byclust.png"), 
+       height = 5, width = 6)
+
+```
+
+Compare testing rates to TB prevalence 
+
+```{r map_prev}
+
+prev_clust %>% 
+  dplyr::select(cluster_number, total, clusteradults, n_prev_tbcases) %>% 
+  mutate(clustid = cluster_number,
+         prev_tot = n_prev_tbcases/total,
+         prev_samp = n_prev_tbcases/clusteradults) %>% 
+  full_join(st_drop_geometry(dat_clust)) -> dat_prev_clust
+
+summary(dat_prev_clust$n_prev_tbcases)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.0000  0.0000  0.4028  1.0000  3.0000 
+summary(dat_prev_clust$prev_tot)
+     # Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.000e+00 0.000e+00 0.000e+00 4.799e-05 1.027e-04 3.800e-04
+summary(dat_prev_clust$n_prev_tbcases*100/dat_prev_clust$clusteradults)
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.0000  0.0000  0.0000  0.1385  0.3263  0.8721 
+
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_prev_clust)) +
+  geom_sf(aes(fill = perc_test_hist), alpha = 0.5) +
+  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  scale_shape_manual(values = 15) +
+  scale_fill_viridis_c(option = "inferno", direction = 1) +
+  labs(x = "", y = "",
+       fill = "",
+       lty = "", pch = "", 
+       title = "% with test history") -> map_hist
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_prev_clust)) +
+  geom_sf(aes(fill = prev_samp*100), alpha = 0.5) +
+  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  scale_shape_manual(values = 15) +
+  scale_fill_viridis_c(option = "inferno", direction = 1) +
+  labs(x = "", y = "",
+       fill = "",
+       lty = "", pch = "", 
+       title = "% prevalence (from survey)") -> map_prev
+map_prev + map_hist
+
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_prev_clust)) +
+  geom_sf(aes(fill = perc_test_hist / (prev_samp*100)), alpha = 0.5) +
+  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  scale_shape_manual(values = 15) +
+  scale_fill_viridis_c(option = "inferno", direction = 1) +
+  labs(x = "", y = "",
+       fill = "",
+       lty = "", pch = "", 
+       title = "Ratio: % with test history vs % prevalence") 
+
+dat_prev_clust %>% 
+  dplyr::select(cluster_number, prev_samp) %>% 
+  mutate(clust_iid = lme4::ranef(fit.list$quant_num)$s02cl_id[,1],
+         prev_samp_cut = gtools::quantcut(prev_samp, 4)) -> dat_prev_clust
+
+summary(dat_prev_clust$prev_samp_cut)
+
+dat_prev_clust %>% 
+  ggplot(aes(prev_samp_cut, clust_iid)) +
+  geom_boxplot()
+
+```
+
+### Standardised Incidence Ratios
+
+Calculate age- and sex-standardised incidence ratios (SIRs) to improve
+comparability between clusters. + Exclude `r sum(is.na(dat$agegp)`
+individuals with unknown age.
+
+```{r calc_e}
+
+# Total respondents reporting testing history by age group and sex:
+dat_nona %>% 
+  group_by(sex, agegp) %>% 
+  summarise(N = n(),
+            N_test_hist = sum(test_history == "Yes")) %>% 
+  ungroup() %>% 
+  mutate(rate_E = N_test_hist/N)-> age_sex_totals
+
+# Totals per cluster:
+dat_nona %>% 
+  group_by(s02cl_id, sex, agegp) %>% 
+  summarise(N = n(),
+            N_test_hist = sum(test_history == "Yes")) %>% 
+  mutate(rate_obs = N_test_hist/N) -> age_sex_byclust
+
+age_sex_byclust %>% 
+  full_join(dplyr::select(age_sex_totals, sex, agegp, rate_E)) %>% 
+  mutate(E = N*rate_E) -> age_sex_byclust
+
+age_sex_byclust %>% 
+  group_by(s02cl_id) %>% 
+  summarise(N = sum(N),
+            E = sum(E),
+            O = sum(N_test_hist),
+            E_rate = E/N,
+            O_rate = O/N) %>% 
+  ungroup() %>% 
+  mutate(clustid = as.numeric(as.factor(s02cl_id)),
+         SIR = O/E)-> total_SIR_byclust
+
+clust %>% 
+  full_join(total_SIR_byclust) -> dat_SIR
+
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_SIR)) +
+  geom_sf(aes(fill = SIR, lty = "Survey cluster"), alpha = 0.5) +
+  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  scale_shape_manual(values = 15) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", high = "red"
+  ) +
+  # scale_fill_viridis_c(option = "plasma", direction = -1) +
+  labs(x = "", y = "", 
+       fill = "SIR",
+       lty = "", pch = "", 
+       title = "Age-sex standardised incidence rates of TB testing history",
+       subtitle = "per cluster",
+       caption = paste0("N = ", sum(is.na(dat$agegp)), " observations with missing age excluded.")) 
+
+ggsave(here::here(figdir,"test_xray_history_SIR_byclust.png"), 
+       height = 6, width = 6)
+```
+
+
+
+

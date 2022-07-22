@@ -1,0 +1,772 @@
+---
+title: "TB prevalence survey: Poverty and wealth"
+output: html_notebook
+---
+
+Aim: to investigate consistency between different indicators of measured and 
+self-reported poverty, at household and neighbourhood level.
+
+Three indicators are: 
++ Poverty score - calculated as a linear combination of poverty indicators taken 
+from the household survey, with regards to household assets, overcrowding and 
+food insecurity. 
++ Self-reported poverty level - A value between 1 and 6 (with 1 the poorest and 6
+the richest) selected by the survey respondent to reflect their understanding 
+of their wealth status that day. 
++ Wealth quantile - ??
+
+
+```{r setup}
+
+library(tidyverse)
+library(magrittr)
+library(ggmap)
+library(sf)
+library(raster)
+library(ggregplot)
+library(BlantyreTBEpi)
+library(patchwork)
+library(spdep)
+library(sp)
+library(gstat)
+
+theme_set(theme_minimal())
+
+figdir <- "testing history/figures/poverty"
+
+```
+
+## Data
+
+```{r load_data}
+
+proj <- CRS("+init=epsg:4326")
+
+#-----------#
+# Geography #
+
+# Cluster/HSA polygons and clinic locations
+clust <- readRDS(here::here("data","clusters.rds")) %>% # Survey clusters
+  mutate(clustid = as.numeric(gsub("c","",cluster)))
+
+# Update CRS type
+clust <- st_transform(clust, st_crs(proj))
+
+# Extract a base map layer to the extent of cluster polygons
+bb <- st_bbox(clust)
+e <- c(bb$xmin, bb$ymin, bb$xmax, bb$ymax)
+names(e) <- c("left","bottom","right","top")
+blt_lines <- get_map(location = e, source = "stamen", maptype = "terrain", zoom = 12)
+
+#------------#
+# Population #
+
+# Worldpop Malawi population count raster
+pop.path <- here::here("data","mwi_ppp_2020_UNadj.tif")
+popMLW <- raster::raster(x = pop.path)
+
+# Crop to same map extent
+popBLT <- raster::crop(popMLW, raster::extent(bb))
+# plot(popBLT)
+
+# Reformat for later plotting
+popBLT_spdf <- as(popBLT, "SpatialPixelsDataFrame")
+popBLT_df <- as.data.frame(popBLT_spdf)
+
+#-------------------#
+# Prevalence survey #
+
+dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data/household_clean.rds") %>%
+  dplyr::select(today, h02cl_id, hh_id,
+                gps_lat, gps_lng, gps_alt, gps_acc, #pov_score, wealth_quantil,
+                h07hh_number, h13hh_level_qual, h14hh_sleep, h15hh_electric,
+                h16hh_bank, h17hh_food, h18hh_clothing, h19hh_hifi, h20hh_sofa, 
+                h21hh_iron, h22hh_step,
+                h23light_col_firewd:h23light_gas,
+                h24cook_col_firewd:h24cook_gas) 
+
+pov_inds <- names(dplyr::select(dat_all, h13hh_level_qual:h21hh_iron))
+
+```
+
+
+### Define poverty score
+
+Calculate poverty score as a linear combination on contributing indicators. Further define quantiles of the calculated score. 
+
+```{r summ_pov_ind}
+
+dat_all %>% 
+  dplyr::select(all_of(pov_inds)) %>% 
+  mutate(across(everything(), as.factor)) %>% 
+  summary()
+
+```
+
+```{r create_pov_score}
+
+#Create the poverty score
+#First make a look-up table with variables and coefficients 
+pov_lookup <- tribble(~var,            ~value,   ~coef,
+                       "h13hh_level_qual",  1,   0,
+                       "h13hh_level_qual",  2,   -0.1070230,
+                       "h13hh_level_qual",  3, -0.4727860,
+                       "h13hh_level_qual", 4, -0.3210555,
+                       "h13hh_level_qual", 5, -14.1811944,
+                       
+                       "h14hh_sleep", 1, 0,
+                       "h14hh_sleep", 2, 0.6709013,
+                       "h14hh_sleep", 3, 0.3235319,
+                       "h14hh_sleep", 4, 0.4599334,
+                       "h14hh_sleep", 5, 0.7354924,
+                       "h14hh_sleep", 6, 2.9858984,
+                       "h14hh_sleep", 7, 0.0,
+                       # "h14hh_sleep", 8, -0.6208952,
+                       
+                       "h15hh_electric", 1, 0, 
+                       "h15hh_electric", 2, 0.9590447,
+                       
+                       "h16hh_bank", 1, 0,
+                       "h16hh_bank", 2, 0.8831791,
+                       
+                       "h17hh_food", 1, 0,
+                       "h17hh_food", 2, -0.5573320,
+                      
+                       "h18hh_clothing", 1, 0,
+                       "h18hh_clothing", 2, -0.6375926,
+                       "h18hh_clothing", 3, -0.9265472,
+                       
+                       "h19hh_hifi", 1, 0,
+                       "h19hh_hifi", 2, 0.8729641,
+                       
+                       "h20hh_sofa", 1, 0,
+                       "h20hh_sofa", 2, 0.9942764,
+                       
+                       "h21hh_iron", 1, 0,
+                       "h21hh_iron", 2, 1.3393567
+                       )
+
+#Now calculate poverty scores and merge to baseline data
+temp_base <- dat_all %>%
+  dplyr::select(hh_id, h13hh_level_qual:h21hh_iron) %>%
+  gather(var, value, -hh_id)
+
+temp_base_b <- dat_all %>%
+  dplyr::select(hh_id, h07hh_number) %>%
+  mutate(h07hh_number = as.integer(h07hh_number)) %>%
+  mutate(hhsize_coef = 0.6222069 * h07hh_number) %>%
+  dplyr::select(-h07hh_number)
+
+temp_base <- left_join(temp_base, pov_lookup)
+
+temp_base <- temp_base %>%
+  dplyr::select(-value) %>%
+  spread(var, coef)
+
+temp_base <- left_join(temp_base, temp_base_b)
+
+temp_base <- temp_base %>%
+  mutate(pov_score = -8.5761747 +  (rowSums(select_(., "-hh_id")))) %>%
+  dplyr::select(hh_id, pov_score)
+
+dat_all <- left_join(dat_all, temp_base)
+
+rm(temp_base, temp_base_b)
+
+# Generate wealth quartiles
+dat_all <- dat_all %>%
+          mutate(
+            wealth_quantil = ntile(pov_score, 4) 
+          )
+
+# Check completeness of GPS data
+summary(!is.na(dat_all$gps_lat))
+#    Mode    TRUE 
+# logical    7175 
+
+# Create sf object
+dat_sf <- dat_all %>%  
+  st_as_sf(coords = c("gps_lng", "gps_lat"), crs = 4326, remove = FALSE)
+
+```
+
+### Summarise other indicators
+
+```{r oth_pov_ind}
+
+dat_all %>% 
+  dplyr::select(c(h23light_col_firewd:h23light_gas,
+                  h24cook_col_firewd:h24cook_gas)) %>% 
+  mutate(across(everything(), as.factor)) %>% 
+  summary()
+
+
+dat_all %>% 
+  dplyr::select(c(hh_id, h23light_col_firewd:h23light_gas)) %>%
+  mutate(across(h23light_col_firewd:h23light_gas, function(x) factor(x == 1, levels = c(TRUE,FALSE)))) -> light_src
+
+light_src %>% 
+  pivot_longer(-hh_id, names_prefix = "h23light_")  %>% 
+  group_by(hh_id) %>% 
+  summarise(n = sum(value == T)) %>% 
+  ungroup() %>% 
+  arrange(n) %>% 
+  pull(n) %>% 
+  as.factor() %>% 
+  summary()
+
+ #   0    1    2    3    4 
+ # 811 3923 2428   12    1 
+
+summary(as.factor(dat_all$h23light_electrty == 1))
+
+ggplot(dat_all, aes((h23light_electrty ==1), pov_score)) +
+  geom_boxplot() +
+  labs(x = "Main light source: electricity", y = "Poverty score") -> light_elec
+
+dat_all %>% 
+  mutate(cook_gas_electric = (h24cook_gas == 1 | h24cook_electrty == 1)) %>% 
+  ggplot(aes(cook_gas_electric, pov_score)) +
+  geom_boxplot() +
+  labs(x = "Main cooking facility: gas or electric", y = "") -> cook_gas_elec
+
+light_elec + cook_gas_elec
+
+ggsave(here::here(figdir,"pov_score_bylightcook.png"), 
+       height = 5, width = 10)
+
+```
+
+
+## Summary
+
+```{r summ_all}
+
+summary(as.factor(dat_all$h22hh_step))
+ #   1    2    3    4    5    6 
+ # 504 2016 3127 1237  238   53 
+
+ggplot(dat_all, aes(as.factor(h22hh_step))) +
+  geom_bar() +
+  labs(x = "Self-reported level", y = "Count")
+
+summary(dat_all$pov_score)
+   # Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# -23.619  -7.133  -5.130  -6.583  -2.866   4.063  
+
+ggplot(dat_all, aes(pov_score)) +
+  geom_histogram() +
+  labs(x = "Calculated score", y = "Count")
+
+summary(as.factor(dat_all$wealth_quantil))
+
+```
+
+## Household level
+
+```{r sr_pov}
+
+cor_score_level <- cor(dat_all$pov_score, dat_all$h22hh_step, use = "complete.obs", method = "kendall") # -0.35
+cor_score_level 
+
+dat_all %>% 
+  group_by(h22hh_step) %>% 
+  summarise(N = paste0(n()," (", round(n()*100/nrow(dat_all),1),")"),
+            pov_score = paste0(round(mean(pov_score, na.rm = T),1)," (",
+                               round(sd(pov_score, na.rm = T),2),")"),
+            wealth = paste0(round(mean(wealth_quantil, na.rm = T),2)," (",
+                               round(sd(wealth_quantil, na.rm = T),2),")")) -> summ_by_sr_pov
+
+dat_all %>% 
+  mutate(score_ltneg10 = case_when(pov_score < -10 ~ "< -10",
+                                    pov_score >= -10 ~ ">= -10")) %>%
+  group_by(score_ltneg10, h22hh_step) %>% 
+  count() %>% 
+  pivot_wider(names_from = score_ltneg10, values_from = n) %>% 
+  mutate(perc_ltneg10 = round(`< -10`*100/(`< -10`+`>= -10`),1),
+         score_ltneg10 = paste0(`< -10`," (",perc_ltneg10,")")) %>% 
+  dplyr::select(h22hh_step, score_ltneg10) -> summ_ltneg10
+
+summ_by_sr_pov <- full_join(summ_by_sr_pov, summ_ltneg10)
+write.csv(summ_by_sr_pov, 
+          here::here("testing history/output","poverty_wealth_summary.csv"), 
+          row.names = FALSE)
+
+dat_all %>% 
+  ggplot(aes(as.factor(h22hh_step), pov_score)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_boxplot() +
+  labs(x = "Self-assessed wealth", y= "PMT poverty score")
+ggsave(here::here(figdir,"pov_score_byself.png"), 
+       height = 5, width = 6)
+
+ggplot(dat_all, aes(pov_score, fill = as.factor(h22hh_step))) +
+  geom_histogram() +
+  labs(x = "PMT poverty score", y = "Count", fill = "Self-assessed wealth") +
+  theme(legend.position = c(0.2,0.8))
+ggsave(here::here(figdir,"pov_score_byself_hist.png"), 
+       height = 5, width = 7)
+
+dat_all %>% 
+  ggplot(aes(as.factor(wealth_quantil), pov_score)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_boxplot() +
+  labs(x = "Wealth quantile", y = "") +
+  guides(fill = "none")
+ggsave(here::here(figdir,"pov_score_bywealth.png"), 
+       height = 5, width = 6)
+
+ggplot(dat_all, aes(pov_score, fill = as.factor(wealth_quantil))) +
+  geom_histogram() +
+  labs(x = "Calculated score", y = "Count", fill = "Wealth quantile") +
+  theme(legend.position = c(0.2,0.8))
+ggsave(here::here(figdir,"pov_score_bywealth_hist.png"), 
+       height = 4, width = 6)
+
+dat_all %>% 
+  group_by(h22hh_step, wealth_quantil) %>% 
+  summarise(N = n(),
+            value = n()*100/nrow(dat_all)) %>% # View()
+  ggplot(aes(as.factor(h22hh_step), as.factor(wealth_quantil), fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  labs(x = "Self-reported poverty scale", y = "Wealth quantile", fill = "% total") 
+ggsave(here::here(figdir,"wealth_byself.png"), 
+       height = 5, width = 7)
+
+```
+
+```{r sr_pov_byind}
+
+dat_all %>% 
+  dplyr::select(c(h22hh_step, pov_score, pov_inds)) %>% #View()
+  mutate(h13hh_level_qual = factor(h13hh_level_qual > 4,
+                                   levels = c(T,F),labels = c("Higher educ.","<= secondary")),
+         h14hh_sleep = factor(h14hh_sleep <= 3, 
+                              levels = c(T,F),labels = c("Bed","No bed")),
+         h15hh_electric = factor(h15hh_electric == 1,
+                                 levels = c(T,F),labels = c("Electricity","No electricity")),
+         h16hh_bank = factor(h16hh_bank == 1,
+                                 levels = c(T,F),labels = c("Bank acct","No bank acct")),
+         h17hh_food = factor(h17hh_food == 2,
+                                 levels = c(T,F),labels = c("Adequate","Not adequate")),
+         h18hh_clothing = factor(h18hh_clothing > 1,
+                                 levels = c(T,F),labels = c("Adequate","Not adequate")),
+         h19hh_hifi = factor(h19hh_hifi == 1,
+                                 levels = c(T,F),labels = c("Yes","No")),
+         h20hh_sofa = factor(h20hh_sofa == 1,
+                                 levels = c(T,F),labels = c("Yes","No")),
+         h21hh_iron = factor(h21hh_iron == 1,
+                                 levels = c(T,F),labels = c("Yes","No"))) -> dat_pov_inds
+
+dat_pov_inds %>%
+  dplyr::select(c(h22hh_step, h13hh_level_qual)) %>% 
+  group_by(h13hh_level_qual,h22hh_step) %>% 
+  count() %>% 
+  ggplot(aes(x = as.factor(h13hh_level_qual), y = n,  fill = as.factor(h22hh_step))) +
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(fill = "Self-reported", x = "Poverty indicator", y = "")
+
+
+dat_pov_inds %>%
+  dplyr::select(c(h22hh_step, pov_inds)) %>%
+  pivot_longer(-h22hh_step) %>% 
+  group_by(name, value, h22hh_step) %>% 
+  count() %>% 
+  ggplot(aes(x = as.factor(value), y = n,  fill = as.factor(h22hh_step))) +
+  geom_bar(position = "fill",stat = "identity") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  facet_wrap(~name, scales = "free_x") + 
+  labs(fill = "Self-reported", x = "Poverty indicator", y = "")
+
+ggsave(here::here(figdir,"pov_inds_byself.png"), height = 7, width = 10)
+
+dat_pov_inds %>% 
+  dplyr::select(c(pov_score, pov_inds)) %>% 
+  pivot_longer(-pov_score) %>% 
+  ggplot(aes(x = as.factor(value), y = pov_score)) +
+  geom_boxplot() + 
+  facet_wrap(~name, scales = "free") + 
+  labs(y = "Poverty score", x = "Poverty indicator")
+
+
+```
+
+
+## Cluster level
+
+```{r summ_byclust}
+
+get_mode <- function(x){
+  sort(unique(x))[which.max(table(x))]
+}
+
+dat_all %>% 
+  group_by(h02cl_id) %>% 
+  summarise(N = n(),
+            mean_pov_score = mean(pov_score),
+            sd_pov_score = sd(pov_score),
+            mean_wealth = mean(wealth_quantil),
+            mean_sr_pov = mean(h22hh_step),
+            sd_sr_pov = sd(h22hh_step),
+            mode_sr_pov = get_mode(h22hh_step),
+            prop_mode_sr_pov = sum(h22hh_step == mode_sr_pov, na.rm = T)/N,
+            corr = cor(pov_score, h22hh_step, method = "kendall"),
+            p_score_ltneg10 = sum(pov_score < -10)*100/N) -> dat_pov_clust
+
+clust %>% 
+  full_join(dat_pov_clust, by = c("clustid" = "h02cl_id")) -> dat_pov_clust
+
+```
+
+```{r pov_score_map}
+
+## Poverty score ##
+
+# Mean
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_pov_clust)) +
+  geom_sf(aes(fill = scale(mean_pov_score)), alpha = 0.5) +
+  scale_fill_viridis_c(option = "inferno", direction = -1) +
+  labs(x = "", y = "", 
+       fill = "",
+       lty = "", pch = "", 
+       subtitle = "Mean poverty score per cluster") -> mean_pov
+# ggsave(here::here(figdir,"pov_score_byclust.png"), 
+#        height = 6, width = 6)
+
+# Variation
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_pov_clust)) +
+  geom_sf(aes(fill = scale(sd_pov_score)), alpha = 0.5) +
+  scale_fill_viridis_c(option = "rocket", direction = -1) +
+  labs(x = "", y = "", 
+       fill = "",
+       lty = "", pch = "", 
+       subtitle = "SD poverty score per cluster") -> sd_pov
+
+# % < -10
+ggmap(blt_lines,
+      base_layer = ggplot(dat_pov_clust)) +
+  geom_sf(aes(fill = p_score_ltneg10), alpha = 0.5) +
+  # geom_point(aes(x = 34, y = 15), col = "red") +
+  scale_fill_viridis_c(option = "inferno", direction = 1) +
+  labs(x = "", y = "",
+       fill = "",
+       lty = "", pch = "",
+       subtitle = "% with score < -10 per cluster") -> perc_ltneg10
+
+
+## Self-reported level ##
+
+# Mean
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_pov_clust)) +
+  geom_sf(aes(fill = scale(mean_sr_pov)), alpha = 0.5) +
+  scale_fill_viridis_c(option = "inferno") +
+  labs(x = "", y = "", 
+       fill = "",
+       lty = "", pch = "", 
+       subtitle = "Mean self-reported poverty per cluster") -> mean_sr
+
+# Variation
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_pov_clust)) +
+  geom_sf(aes(fill = scale(sd_sr_pov)), alpha = 0.5) +
+  scale_fill_viridis_c(option = "rocket", direction = -1) +
+  labs(x = "", y = "", 
+       fill = "",
+       lty = "", pch = "", 
+       subtitle = "SD self-reported poverty per cluster") -> sd_sr
+
+(mean_pov + sd_pov) / (mean_sr + sd_sr)
+ggsave(here::here(figdir,"poverty_byclust.png"), height = 12, width = 15)
+
+# % reporting mode value
+# ggmap(blt_lines,
+  #     base_layer = ggplot(dat_pov_clust)) +
+  # geom_sf(aes(fill = prop_mode_sr_pov*100), alpha = 0.5) +
+  # scale_fill_viridis_c(option = "inferno") +
+  # labs(x = "", y = "",
+  #      fill = "",
+  #      lty = "", pch = "",
+  #      subtitle = "% reporting cluster mode poverty level") -> prop_sr
+
+ggmap(blt_lines, 
+      base_layer = ggplot(dat_pov_clust)) +
+  geom_sf(aes(fill = corr), alpha = 0.5) +
+  scale_fill_viridis_c(option = "mako") +
+  labs(x = "", y = "", 
+       fill = "Kendall's tau",
+       lty = "", pch = "", 
+       subtitle = "Correlation between score and self-report, per cluster") -> corr_score_sr
+
+perc_ltneg10
+corr_score_sr
+ggsave(here::here(figdir,"perc_score_ltneg10.png"), perc_ltneg10, height = 6, width = 7)
+ggsave(here::here(figdir,"corr_score_sr_byclust.png"), corr_score_sr, height = 6, width = 7)
+
+```
+
+```{r score_correspondence}
+
+ggplot(dat_all, aes(scale(-pov_score), scale(h22hh_step))) +
+  geom_abline(intercept = 0, slope = 1, col = "grey", lty = "dashed") +
+  geom_jitter(alpha = 0.1) +
+  geom_smooth() +
+  labs(x = "Scaled negative poverty score", y = "Scaled self-reported level")
+ggsave(here::here(figdir,"score_vs_sr_byHH.png"), height = 6, width = 7)
+
+ggplot(dat_pov_clust, aes(scale(-mean_pov_score), scale(mean_sr_pov))) +
+  geom_abline(intercept = 0, slope = 1, col = "grey", lty = "dashed") +
+  geom_point() +
+  geom_smooth() +
+  labs(x = "Scaled negative mean poverty score", y = "Scaled mean self-reported level")
+ggsave(here::here(figdir,"score_vs_sr_byclust.png"), height = 6, width = 7)
+
+```
+
+```{r cluster_corr}
+
+## Define cluster adjacency graph
+clust.nb <- spdep::poly2nb(clust, snap = 0.1)
+lw <- spdep::nb2listw(clust.nb, style = "W", zero.policy = TRUE) 
+
+spdep::moran.test(dat_pov_clust$mean_pov_score, lw, zero.policy = TRUE)
+MC <- spdep::moran.mc(dat_pov_clust$mean_pov_score, lw, 1000, zero.policy = TRUE)
+
+MC
+plot(MC, main="", las=1)
+
+```
+
+```{r cluster_model}
+
+## Define cluster adjacency graph
+G <- spdep::nb2mat(clust.nb, style = "B", zero.policy = TRUE) 
+
+## Priors
+# For IID precision
+prior.prec <- list(prec = list(prior = "pc.prec", param = c(5, 0.01)))
+# For BYM precision and phi
+priors.bym <- list(prec = list(prec = list(prior = "pc.prec", param = c(0.5/0.31, 0.01))),
+                   phi = list(param = c(0.5, 2/3)))
+
+## Formulae - assess spatial structure 
+f1 <- pov_score ~ 1 + f(h02cl_id, model = "iid",
+                                   hyper = prior.prec)
+f2 <- pov_score ~ 1 + f(h02cl_id, model = "bym2", 
+                                  graph = G, 
+                                  hyper = priors.bym,
+                                  scale.model = TRUE, constr = TRUE)
+
+## Fitting
+fit_model <- function(f){
+  fit <- INLA::inla(f, 
+            data = dat_all,
+            family = "normal",
+            control.compute = list(waic = TRUE, dic = TRUE),
+            control.predictor = list(compute = TRUE),
+            verbose = FALSE)
+  return(fit)
+}
+fit.list <- lapply(list(f1, f2), fit_model)
+
+lapply(fit.list, summary)
+
+```
+
+## Household location
+
+Investigate evidence of spatial correlation between household locations with 
+respect to measured poverty. 
+
+```{r vgm_fcn}
+
+plot_vgm <- function(values, data.sf, cressie = TRUE, cutoff = NULL, title = NULL, fit.kappa = FALSE, ylim = NULL){
+  library(gstat)
+  vgm <- variogram(values ~ 1,
+                   data.sf, 
+                   # cutoff = cutoff,
+                   # width = width,
+                   cressie = cressie)
+
+  fit.vgm <- fit.variogram(vgm, vgm("Mat"), fit.kappa = fit.kappa)
+  print(fit.vgm)
+
+  if (!is.null(ylim)){
+    plot(vgm,
+         fit.vgm,
+         ylim = ylim,
+         xlab = "Distance", main = title) -> plot
+  }else{
+    plot(vgm,
+         fit.vgm,
+         xlab = "Distance", main = title) -> plot
+  }
+
+  
+  return(plot)
+
+}
+
+```
+
+### Calculated score
+
+```{r score_by_hhloc}
+
+ggmap(blt_lines, 
+      base_layer = ggplot(clust)) +
+  geom_sf(fill = "grey", alpha = 0.5) +
+  geom_sf(data = dat_sf, aes(col = as.factor(h22hh_step)), cex = 0.6, alpha = 0.5) +
+  scale_shape_manual(values = 15) +
+  scale_color_viridis_d(option = "inferno", direction = 1) +
+  labs(x = "", y = "", 
+       lty = "", pch = "", col = "Level",
+       subtitle = "Self-reported poverty level") -> sr_byhh
+# ggsave(here::here(figdir,"sr_pov_byHH.png"), 
+#        height = 5, width = 6)
+
+ggmap(blt_lines, 
+      base_layer = ggplot(clust)) +
+  geom_sf(fill = "grey", alpha = 0.5) +
+  geom_sf(data = dat_sf, aes(col = pov_score), cex = 0.5, alpha = 0.5) +
+  scale_shape_manual(values = 15) +
+  scale_color_viridis_c(option = "inferno", direction = -1) +
+  labs(x = "", y = "", 
+       lty = "", pch = "", col = "",
+       subtitle = "Calculated poverty score") -> score_byhh
+# 
+# ggsave(here::here(figdir,"pov_scorebyHH.png"), 
+#        height = 5, width = 6)
+
+ggmap(blt_lines, 
+      base_layer = ggplot(clust)) +
+  geom_sf(fill = "grey", alpha = 0.5) +
+  geom_sf(data = dat_sf, aes(col = as.factor(wealth_quantil)), cex = 0.5, alpha = 0.5) +
+  scale_color_viridis_d(option = "inferno", direction = -1) +
+  labs(x = "", y = "", 
+       lty = "", pch = "", col = "Quantile",
+       subtitle = "Calculated poverty score") -> scorequant_byhh
+
+# ggsave(here::here(figdir,"wealth_quant_byHH.png"), 
+#        height = 5, width = 6)
+
+scorequant_byhh + sr_byhh
+ggsave(here::here(figdir,"quantvsr_byHH.png"),
+       height = 5, width = 12)
+
+# ggmap(blt_lines, 
+#       base_layer = ggplot(clust)) +
+#   geom_sf(fill = "grey", aes(lty = "Survey cluster"), alpha = 0.5) +
+#   geom_sf(data = dat_sf, aes(col = (pov_score < -10)), cex = 0.5, alpha = 0.5) +
+#   scale_shape_manual(values = 15) +
+#   scale_color_viridis_d(option = "viridis", direction = 1) +
+#   labs(x = "", y = "", 
+#        lty = "", pch = "", col = "Score < -10",
+#        subtitle = "Calculated poverty score")
+# 
+# ggsave(here::here(figdir,"pov_scorebyHH_ltneg10.png"), 
+#        height = 5, width = 6)
+
+vgm_score <- plot_vgm(dat_sf$pov_score, dat_sf)
+vgm_sr <- plot_vgm(dat_sf$h22hh_step, dat_sf)
+
+png(here::here(figdir, "vgm_score_hh.png"), height = 400, width = 500)
+vgm_score
+dev.off()
+png(here::here(figdir, "vgm_sr_hh.png"), height = 400, width = 500)
+vgm_sr
+dev.off()
+
+coo <- st_coordinates(dat_sf)
+
+nn_dist <- spatstat.geom::nndist(unique(coo), k = 1)
+summary(nn_dist)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 3.680e-07 1.461e-04 2.585e-04 3.115e-04 4.142e-04 3.601e-03 
+
+S.dist  <-  spdep::dnearneigh(coo, 0, max(nn_dist))  
+lw <- nb2listw(S.dist, style="W") 
+
+MI  <-  moran.mc(dat_all$pov_score, lw, nsim=1000) 
+plot(MI, main="Poverty score", las=1) 
+MI
+
+MI  <-  moran.mc(dat_all$h22hh_step, lw, nsim=1000) 
+plot(MI, main="Self-reported level", las=1) 
+MI
+
+```
+
+```{r score_hh_smooth}
+
+dat_sp <- dat_sf %>% 
+  st_transform(proj) %>% 
+  mutate(pov_score_scale = scale(pov_score)) %>% 
+  as_Spatial()
+
+# Calculate variogram
+vgm <- variogram(pov_score~1, dat_sp) 
+# plot(vgm)
+vfit <- fit.variogram(vgm, model = vgm(psill = 10, model = "Mat", nugget = 30)) 
+plot(vgm, vfit) 
+
+png(here::here(figdir, "vgm_score_hh.png"), height = 400, width = 400)
+plot(vgm, vfit) 
+dev.off()
+
+# Make grid
+clust %>% 
+  st_transform(proj) %>% 
+  as_Spatial() -> clust_sp
+
+grd <- makegrid(clust_sp, n = 5000)
+colnames(grd) <- c("x", "y")
+plot(grd)
+
+grd_sp <- SpatialPoints(coords = grd, proj4string = proj)
+
+kriged <- krige(pov_score_scale ~ 1, dat_sp, grd_sp, model=vfit)
+
+ggmap(blt_lines, 
+      base_layer = ggplot(data = as.data.frame(kriged), 
+                          aes(x=x, y=y, fill = scale(var1.pred)))) +
+  geom_tile(alpha = 0.5) +
+  scale_fill_viridis_c(option = "inferno", direction = -1) +
+  labs(x = "", y = "", 
+       lty = "", pch = "", fill = "",
+       subtitle = "Kriged poverty score, by household location") -> score_krig
+ggsave(here::here(figdir,"hh_score_kriged_scaled.png"), score_krig, height = 5, width = 6)
+
+```
+
+```{r sr_hh_smooth}
+
+dat_sp$h22hh_step_scale <- scale(dat_sp$h22hh_step)
+
+# Calculate variogram
+vgm <- variogram(h22hh_step~1, dat_sp) 
+plot(vgm)
+vfit <- fit.variogram(vgm, model = vgm(psill = 0.1, model = "Mat", nugget = 0.8)) 
+plot(vgm, vfit) 
+
+png(here::here(figdir, "vgm_sr_hh.png"), height = 400, width = 400)
+plot(vgm, vfit) 
+dev.off()
+
+kriged2 <- krige(h22hh_step_scale ~ 1, dat_sp, grd_sp, model=vfit)
+
+ggmap(blt_lines, 
+      base_layer = ggplot(data = as.data.frame(kriged2), 
+                          aes(x=x, y=y, fill = var1.pred))) +
+  geom_tile(alpha = 0.5) +
+  scale_fill_viridis_c(option = "inferno", direction = 1) +
+  labs(x = "", y = "", 
+       lty = "", pch = "", fill = "",
+       subtitle = "Kriged self-reported level, by household location") -> sr_krig
+ggsave(here::here(figdir,"hh_sr_kriged_scaled.png"), sr_krig, height = 5, width = 6)
+
+```
