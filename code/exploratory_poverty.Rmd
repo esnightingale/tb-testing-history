@@ -6,14 +6,13 @@ output: html_notebook
 Aim: to investigate consistency between different indicators of measured and 
 self-reported poverty, at household and neighbourhood level.
 
-Three indicators are: 
+Two indicators are: 
 + Poverty score - calculated as a linear combination of poverty indicators taken 
 from the household survey, with regards to household assets, overcrowding and 
 food insecurity. 
 + Self-reported poverty level - A value between 1 and 6 (with 1 the poorest and 6
 the richest) selected by the survey respondent to reflect their understanding 
 of their wealth status that day. 
-+ Wealth quantile - ??
 
 
 ```{r setup}

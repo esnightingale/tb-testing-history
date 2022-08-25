@@ -1,0 +1,383 @@
+---
+title: "Baseline model development"
+output: html_notebook
+---
+
+```{r setup}
+
+set.seed(0000)
+
+library(tidyverse)
+library(gtools)
+library(ggmap)
+library(sf)
+library(patchwork)
+library(brms)
+library(spdep)
+library(tidybayes)
+library(sjPlot)
+library(bayesplot)
+
+# devtools::install_github("m-clark/visibly")
+# library(visibly)
+
+theme_set(theme_minimal())
+
+figdir <- "figures/fit"
+
+# Fix default ggsave background
+ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
+
+#------------------------------------------------------------------------------#
+# Run data loading script
+
+source(here::here("code/load_data.R"), echo=TRUE)
+
+```
+
+# Setup 
+
+## Study area
+
+```{r area_map}
+
+# Map clusters and clinic areas
+
+clinicarea$type = "Clinic"
+clust$type = "Cluster"
+
+clust %>% 
+  bind_rows(clinicarea) %>% 
+  mutate(type = factor(type, levels = c("Cluster", "Clinic"))) -> clust_clinic
+
+clust_clinic %>% 
+  st_centroid() %>% 
+  st_coordinates() %>% 
+  as.data.frame() -> clust_cent
+
+clust_clinic <- bind_cols(clust_clinic, clust_cent)
+
+ggmap(blt_lines, 
+      base_layer = ggplot(clust_clinic)) +
+  geom_sf(aes(col = type, lty = type), fill = NA, lwd = 1) +
+  geom_text(aes(label = clustid, x = X, y = Y)) +
+  labs(x = "", y = "", col = "")
+# ggsave(here::here("figures","cluster_clinic_map.png"), height = 6, width = 6)
+
+```
+
+## Missing data 
+
+Primary analysis will be complete case, with multiple imputation as supplementary to check for robustness.
+
+```{r missdata}
+
+# Summarise missing data
+
+dat %>% 
+  dplyr::select(ever_test, s09age, sex, hiv_combined, pov_score, wealth_step) %>% 
+  summary()
+
+# Total incomplete observations
+sum(is.na(dat$s09age) | dat$hiv_combined == "HIV unknown" | is.na(dat$pov_score))
+# 148/2738 = 5.4%
+
+dat_nona <- dat %>% 
+  filter(!is.na(s09age) & hiv_combined != "HIV unknown" & !is.na(pov_score))
+
+```
+
+## Make analysis dataset
+
+```{r make_data}
+
+cluster_inc <- prev_clust %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(cluster_number, clust_inc_1518)
+
+dat_nona$hiv <- dat_nona$hiv_combined
+dat_nona$hiv[dat_nona$hiv == "HIV positive ART"] <- "HIV positive"
+
+dat_nona <- mutate(dat_nona, 
+              test01 = as.numeric(ever_test == "Yes"),
+              agegp = factor(cut(s09age, breaks = c(17,24,34,44,54,max(dat$s09age, na.rm=T)))),
+              hiv = factor(hiv, levels = c("HIV negative","HIV positive"), labels = c("HIV negative","HIV positive")),
+              pov_score_scale = -scale(pov_score),
+              wealth_quant = as.factor(ntile(pov_score_scale, 6)),
+              pov01 = as.factor(pov_score > 0),
+              wealth_quant1 = as.factor(wealth_quant == 1),
+              wealth_step = as.factor(wealth_step),
+              wealth_step1 = as.factor(wealth_step == 1),
+              know_test = as.factor(s60tb_anyone == 1),
+              know_trt = as.factor(s62tb_famtb == 1),
+              know_died = as.factor(s65tb_died == 1)) %>% 
+  full_join(cluster_inc, by = c("clustid" = "cluster_number"))
+
+# Check
+dat_nona %>% 
+  dplyr::select(test01, sex, agegp, hiv, pov_score, pov_score_scale, pov01, wealth_quant, wealth_step, wealth_step1, clust_inc_1518, clinic_id) %>% 
+  summary()
+
+```
+
+# Modelling
+
+## Priors
+
+Weakly-informative
+
+```{r priors}
+
+priors <- c(prior(normal(-2, 2), class = Intercept),
+            prior(normal(0,10), class = b),
+            prior(cauchy(0,1), class = sd, group = "clustid"))
+
+```
+
+## Null model 
+
+Fit a null model with no cluster structure or covariates. Weakly informative
+prior on the intercept. 
+
+```{r fit_simp}
+
+fit0 <- brm(test01 ~ 1, 
+                 data = dat_nona,
+                 prior = prior(normal(-2, 2), class = "Intercept"),
+                 family = "bernoulli")
+summary(fit0)
+
+# Prior predictive check
+pp_check(fit0)
+
+# Posterior predictive checks
+y <- dat_nona$test01
+yrep <- posterior_predict(fit0, draws = 20)
+
+# Individual residuals
+dat_nona %>%
+  add_residual_draws(fit0, ndraws = 20) %>%
+  ggplot(aes(x = .row, y = .residual)) +
+  stat_pointinterval()
+
+dat_nona %>%
+  add_predicted_draws(fit0, ndraws = 20) %>%
+  make_probability_residuals(.prediction, test01, n = 1) %>%
+  ggplot(aes(sample = .p_residual)) +
+  geom_qq(distribution = qunif) +
+  geom_abline()
+
+# Leave-one-out cross-validation
+loo0 <- LOO(fit0, save_psis = TRUE)
+plot(loo0)
+
+```
+
+Note on LOO for discrete outcomes:
+
+https://discourse.mc-stan.org/t/worst-loo-pit-plots-ever-pp-checks-great/18789/3
+
+LOO PIT expected to look wrong as not designed for discrete outcomes. 
+
+
+## Fixed effect model
+
+Note that in brm the intercept prior is applied assuming mean-centred covariates, i.e. the expected response when 
+all covariates at their means. All predictors here are factors, so intercept is the expected response for a HIV- male aged 18-24. 
+
+```{r fit_fixeff}
+
+fit1 <- brm(test01 ~ 1 + agegp + sex + hiv, 
+                 data = dat_nona,
+                 prior = c(prior(normal(-2, 2), class = Intercept),
+                           prior(normal(0,10), class = b)),
+                 family = "bernoulli")
+summary(fit1)
+
+pairs(fit1)
+
+# Prior predictive check
+pp_check(fit1)
+
+# Posterior predictive checks
+y <- dat_nona$test01
+yrep <- posterior_predict(fit1, draws = 20)
+
+# Individual residuals
+dat_nona %>%
+  add_residual_draws(fit1, ndraws = 20) %>%
+  ggplot(aes(x = .row, y = .residual)) +
+  stat_pointinterval()
+
+dat_nona %>%
+  add_predicted_draws(fit1, ndraws = 20) %>%
+  make_probability_residuals(.prediction, test01, n = 1) %>%
+  ggplot(aes(sample = .p_residual)) +
+  geom_qq(distribution = qunif) +
+  geom_abline()
+
+# Leave-one-out cross-validation
+loo1 <- LOO(fit1, save_psis = TRUE)
+plot(loo1)
+
+```
+
+```{r fit_fixeff_int}
+
+fit1a <- brm(test01 ~ 1 + agegp*sex + hiv, 
+                 data = dat_nona,
+                 prior = c(prior(normal(-2, 2), class = Intercept),
+                           prior(normal(0,10), class = b)),
+                 family = "bernoulli")
+
+summary(fit1a)
+
+# Prior predictive check
+pp_check(fit1a)
+
+# Posterior predictive checks
+y <- dat_nona$test01
+yrep <- posterior_predict(fit1a, draws = 20)
+
+# Individual residuals
+dat_nona %>%
+  add_residual_draws(fit1a, ndraws = 20) %>%
+  ggplot(aes(x = .row, y = .residual)) +
+  stat_pointinterval()
+
+dat_nona %>%
+  add_predicted_draws(fit1a, ndraws = 20) %>%
+  make_probability_residuals(.prediction, test01, n = 1) %>%
+  ggplot(aes(sample = .p_residual)) +
+  geom_qq(distribution = qunif) +
+  geom_abline()
+
+# Leave-one-out cross-validation
+loo1a <- LOO(fit1a, save_psis = TRUE)
+plot(loo1a)
+
+```
+
+## Hierarchical model
+
+Fit a regression model for ever tested, adjusted for age, sex and HIV status
+with IID random effects by cluster. Compare with and without age*sex interaction.
+
+```{r fit_clust}
+
+# Note:
+# If the posterior sd for any parameter (or qoi) is more than 0.1 times the prior sd, 
+# then print out a note: "The prior distribution for this parameter is informative." 
+# Then the user can go back and check that the default prior makes sense for this 
+# particular example.
+
+fit2 <- brm(test01 ~ sex + agegp + hiv + (1 | clustid), 
+                 data = dat_nona,
+                 prior = priors,
+                 family = "bernoulli")
+
+summary(fit2)
+
+# Prior predictive check
+pp_check(fit2)
+
+pairs(fit2)
+
+# Posterior predictive checks
+y <- dat_nona$test01
+yrep <- posterior_predict(fit2, draws = 20)
+
+# Individual residuals
+dat_nona %>%
+  add_residual_draws(fit2, ndraws = 20) %>%
+  ggplot(aes(x = .row, y = .residual)) +
+  stat_pointinterval()
+
+dat_nona %>%
+  add_predicted_draws(fit2, ndraws = 20) %>%
+  make_probability_residuals(.prediction, test01) %>%
+  ggplot(aes(sample = .p_residual)) +
+  geom_qq(distribution = qunif) +
+  geom_abline()
+
+# Leave-one-out cross-validation
+loo1a <- LOO(fit2, save_psis = TRUE)
+plot(loo1a)
+
+# Conditional effects
+# pdf(here::here(figdir, "condeff_base1.pdf"), height = 5, width = 6)  
+plot(conditional_effects(fit2), ask = F)
+# dev.off()
+
+```
+
+### With interaction
+
+```{r fit_clust_int}
+
+# With interaction
+fit2a <- brm(test01 ~ sex*agegp + hiv + (1 | clustid), 
+                 data = dat_nona,
+                 prior = priors,
+                 family = "bernoulli")
+summary(fit2a)
+
+# Prior predictive check
+pp_check(fit2a)
+pp_check(fit2a, type = "stat",stat = "mean", ndraws = 500)
+# ggsave(here::here(figdir,"ppc_tstat_baseline.png"), height = 5, width = 5)
+
+# Posterior predictive checks
+y <- dat_nona$test01
+yrep <- posterior_predict(fit2a, draws = 20)
+
+# Individual residuals
+dat_nona %>%
+  add_residual_draws(fit2a, ndraws = 20) %>%
+  ggplot(aes(x = .row, y = .residual)) +
+  stat_pointinterval()
+
+dat_nona %>%
+  add_predicted_draws(fit2a, ndraws = 20) %>%
+  make_probability_residuals(.prediction, test01) %>%
+  ggplot(aes(sample = .p_residual)) +
+  geom_qq(distribution = qunif) +
+  geom_abline()
+
+# Leave-one-out cross-validation
+loo1a <- LOO(fit2a, save_psis = TRUE)
+plot(loo2a)
+
+# Conditional effects
+# pdf(here::here(figdir, "condeff_base1.pdf"), height = 5, width = 6)  
+plot(conditional_effects(fit2a), ask = F)
+# dev.off()
+
+```
+
+### Plot baseline model coefficients
+
+```{r plot_fit_base}
+
+plot_model(fit2a, 
+           order.terms = c(1,2,3,4,5,7,8,9,10,6),
+           transform = NULL, 
+           title = "",
+           axis.labels = rev(c("Male","Age (24,34]", "Age (34,44]", "Age (44,54]", "Age (54,87]",
+                           "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age (54,87]",
+                           "HIV positive"))
+           ) + 
+  geom_hline(yintercept = 0, lty = "dashed", col = "grey")
+ggsave(here::here(figdir,"fixeff_baseline.png"), height = 6, width = 6)
+
+```
+
+## Save final baseline fit and analysis data
+
+```{r save_base_fit}
+
+saveRDS(dat_nona, here::here("data","analysis_data_primary.rds"))
+
+saveRDS(fit2a, here::here("output","fit_base.rds"))
+
+```

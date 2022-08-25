@@ -1,0 +1,189 @@
+---
+title: "Primary analysis"
+output: html_notebook
+---
+
++ Compare additions of poverty measures to baseline model 
+
+```{r setup}
+
+set.seed(0000)
+
+library(tidyverse)
+library(gtools)
+library(ggmap)
+library(sf)
+library(patchwork)
+library(brms)
+library(spdep)
+library(tidybayes)
+library(sjPlot)
+library(bayesplot)
+library(broom.mixed)
+
+# devtools::install_github("m-clark/visibly")
+# library(visibly)
+
+theme_set(theme_minimal())
+
+figdir <- "figures/fit"
+
+# Fix default ggsave background
+ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
+
+```
+
+```{r load_data}
+
+# source(here::here("code/load_data.R"), echo=TRUE)
+dat_nona <- readRDS(here::here("data","analysis_data_primary.rds"))
+fit_base <- readRDS(here::here("output","fit_base.rds"))
+
+dat_nona %>% 
+  dplyr::select(test01, sex, agegp, hiv, pov_score, pov01, pov_score_scale, wealth_quant, wealth_step, know_test, know_trt, know_died) %>% 
+  summary()
+
+summary(fit_base)
+exp(fixef(fit_base))
+
+```
+
+```{r interpret_base}
+
+hyp <- c(oldermen = "sexMale + agegp5487 + sexMale:agegp5487 = 0")
+
+oldermen <- hypothesis(fit_base, hyp)
+oldermen
+exp(oldermen$hypothesis$Estimate)
+exp(oldermen$hypothesis$CI.Lower)
+exp(oldermen$hypothesis$CI.Upper)
+
+```
+
+## Fit with poverty measures
+
+```{r priors}
+
+priors <- c(prior(normal(-2, 2), class = Intercept),
+            prior(normal(0,10), class = b),
+            prior(cauchy(0,1), class = sd, group = "clustid"))
+
+```
+
+```{r add_pov}
+
+# Explore relative significance of the two poverty measures
+f1 <- test01 ~ sex*agegp + hiv + pov_score_scale + (1 | clustid)
+f2 <- test01 ~ sex*agegp + hiv + wealth_quant + (1 | clustid)
+f3 <- test01 ~ sex*agegp + hiv + wealth_step + (1 | clustid)
+
+f.list <- list(score_c = f1,
+               score_q = f2, 
+               step = f3)
+
+fit_list_pov <- lapply(f.list, 
+                       function(f) brm(f, data = dat_nona, prior = priors, family = "bernoulli"))
+saveRDS(fit_list_pov, here::here("output","fit_list_pov.rds"))
+
+```
+
+```{r summ_pov}
+
+summ_list_pov <- lapply(fit_list_pov, summary)
+
+bind_rows(
+  summary(fit_base)$random$clustid,
+  bind_rows(lapply(summ_list_pov, 
+                   function(summ) summ$random$clustid))) %>% 
+  mutate(Model = factor(c("Baseline","PMT score continuous", "PMT score quantile", "Self-assessed wealth"))) -> ranef_sd_tab
+
+ranef_sd_tab %>% 
+  ggplot(aes(Estimate, Model, xmin = `l-95% CI`, xmax = `u-95% CI`)) +
+  geom_errorbar(width = 0.2) +
+  geom_point() +
+  labs(y = "", x = "Estimated SD of random intercept") +
+  scale_y_discrete(limits = rev(levels(ranef_sd_tab$Model)))
+
+ggsave(here::here(figdir, "compare_reffSD_pov.png"), height = 6, width = 6)
+
+```
+
+```{r comp_looic}
+
+fit_base <- add_criterion(fit_base, "loo")
+fit_list_pov <- lapply(fit_list_pov, add_criterion, "loo")
+
+loo_comp <- lapply(fit_list_pov, function(fit) loo_compare(fit_base, fit, criterion = "loo"))
+loo_comp
+
+mod_wts <- lapply(fit_list_pov, function(fit) model_weights(fit_base, fit))
+mod_wts
+
+```
+
+```{r plot_fixeff}
+
+plot_fixeff <- function(fit, order = NULL, labs = NULL, title = NULL){
+  plot_model(fit, 
+             order.terms = order,
+             transform = NULL, 
+             title = title,
+             axis.labels = labs) + 
+    geom_hline(yintercept = 0, lty = "dashed", col = "grey") -> p
+  return(p)
+}
+
+lapply(fit_list_pov, plot_fixeff)
+
+```
+
+```{r tidy_pov_fixeff}
+
+get_model_data(fit_list_pov[[1]], type = "est", terms = "pov_score_scale") %>% 
+  bind_rows(get_model_data(fit_list_pov[[2]], type = "est", terms = paste0("wealth_quant",2:6))) %>% 
+  bind_rows(get_model_data(fit_list_pov[[3]], type = "est", terms = paste0("wealth_step",2:6))) %>% 
+  mutate(order = row_number(),
+         term = factor(term)) -> ORtab
+
+ORtab
+
+```
+
+```{r plot_pov_fixeff}
+
+labs <- c("PMT score - continuous",
+          "PMT score - 2nd quantile",
+          "3rd quantile",
+          "4th quantile",
+          "5th quantile",
+          "6th quantile",
+          "Self-assessed wealth - 2nd step",
+          "3rd step",
+          "4th step",
+          "5th step",
+          "6th step")
+
+get_model_data(fit_list_pov[[1]], type = "est", terms = "pov_score_scale", transform = NULL) %>% 
+  bind_rows(get_model_data(fit_list_pov[[2]], type = "est", terms = paste0("wealth_quant",2:6), transform = NULL)) %>% 
+  bind_rows(get_model_data(fit_list_pov[[3]], type = "est", terms = paste0("wealth_step",2:6), transform = NULL)) %>%
+  # filter(term != "pov_score_scale") %>%
+  mutate(order = row_number(),
+         term = factor(term, levels = c("pov_score_scale", paste0("wealth_quant",2:6),paste0("wealth_step",2:6))),
+         level = as.numeric(gsub("wealth_quant", "", gsub("wealth_step","",term)))) %>% 
+  ungroup() -> logORtab
+
+logORtab %>% 
+  ggplot(aes(term, estimate, col = level)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_vline(xintercept = 5.5, col = "grey") +
+  geom_linerange(aes(ymin = conf.low, ymax = conf.high), lwd = 1) +
+  geom_linerange(aes(ymin = conf.low50, ymax = conf.high50), lwd = 1.2) +
+  geom_point() +
+  coord_flip() +
+  scale_x_discrete(limits = rev(levels(logORtab$term)), labels = rev(labs)) +
+  guides(col = "none") +
+  labs(x = "", y = "Estimate (log-odds ratio)")
+
+ggsave(here::here(figdir, "compare_pov_coeffs.png"), height = 6, width = 6)
+
+```

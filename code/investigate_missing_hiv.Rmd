@@ -1,0 +1,238 @@
+---
+title: "Investigate missing HIV status"
+output: html_notebook
+---
+
+Compare standardised rates between different assumptions of unknown HIV status
+
+```{r setup}
+
+library(tidyverse)
+library(ggmap)
+library(sf)
+library(patchwork)
+
+# Fix default ggsave background
+ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
+
+theme_set(theme_minimal())
+
+figdir <- "figures/descriptive/missing HIV"
+
+# Source data loading script
+source(here::here("code/load_data.R"), echo=TRUE)
+
+# Drop missing age
+dat <- dat %>% 
+  filter(!is.na(agegp)) %>% 
+  mutate(agegp2 = cut(s09age, breaks = c(17,30,40,50,max(dat$s09age, na.rm=T))))
+
+dat$hiv <- as.character(dat$hiv_combined)
+dat$hiv[dat$hiv == "HIV positive ART"] <- "HIV positive"
+
+```
+
+```{r setup_assns}
+
+# Complete case
+dat1 <- dat %>% 
+  filter(hiv != "HIV unknown") %>% 
+  mutate(hiv = factor(hiv, levels = c("HIV negative","HIV positive")))
+
+# All positive
+dat2 <- dat
+dat2$hiv[dat2$hiv == "HIV unknown"] <- "HIV positive"
+dat2 <- dat2 %>% 
+  mutate(hiv = factor(hiv, levels = c("HIV negative","HIV positive")))
+
+# All negative
+dat3 <- dat
+dat3$hiv[dat3$hiv == "HIV unknown"] <- "HIV negative"
+dat3 <- dat3 %>% 
+  mutate(hiv = factor(hiv, levels = c("HIV negative","HIV positive")))
+
+# Random sample at total positive rate (out of known values)
+r <- sum(dat$hiv == "HIV positive")/sum(dat$hiv != "HIV unknown")
+dat4 <- dat
+dat4$hiv[dat4$hiv == "HIV unknown"] <- sample(c("HIV negative","HIV positive"), 
+                                              size = sum(dat$hiv == "HIV unknown"), 
+                                              replace = T, prob = c(1-r, r))
+dat4 <- dat4 %>% 
+  mutate(hiv = factor(hiv, levels = c("HIV negative","HIV positive")))
+
+dat.list <- list(`Complete case` = dat1,
+                 `All positive` = dat2,
+                 `All negative` = dat3,
+                 `Sampled` = dat4)
+
+lapply(dat.list, function(x) summary(x$hiv))
+
+```
+
+```{r run_loop}
+
+purrr::map2(dat.list, names(dat.list), std_by_hiv, save = F)
+
+# Complete case
+ #  O_vs_E_ever     O_vs_E_sputum     O_vs_E_xray    
+ # Min.   :0.0000   Min.   :0.0000   Min.   :0.0000  
+ # 1st Qu.:0.7310   1st Qu.:0.6033   1st Qu.:0.4599  
+ # Median :0.9106   Median :0.9407   Median :0.9486  
+ # Mean   :0.9780   Mean   :1.0191   Mean   :0.9518  
+ # 3rd Qu.:1.2770   3rd Qu.:1.2819   3rd Qu.:1.4115  
+ # Max.   :2.4913   Max.   :3.2375   Max.   :2.4558 
+
+# All positive
+ #  O_vs_E_ever     O_vs_E_sputum     O_vs_E_xray    
+ # Min.   :0.0000   Min.   :0.0000   Min.   :0.0000  
+ # 1st Qu.:0.7177   1st Qu.:0.6073   1st Qu.:0.4866  
+ # Median :0.9312   Median :0.9527   Median :0.9404  
+ # Mean   :0.9708   Mean   :1.0055   Mean   :0.9466  
+ # 3rd Qu.:1.2355   3rd Qu.:1.2392   3rd Qu.:1.4210  
+ # Max.   :2.4881   Max.   :3.1981   Max.   :2.4693
+
+# All negative
+ #  O_vs_E_ever     O_vs_E_sputum     O_vs_E_xray    
+ # Min.   :0.0000   Min.   :0.0000   Min.   :0.0000  
+ # 1st Qu.:0.7321   1st Qu.:0.6056   1st Qu.:0.4628  
+ # Median :0.9075   Median :0.9600   Median :0.9602  
+ # Mean   :0.9734   Mean   :1.0109   Mean   :0.9497  
+ # 3rd Qu.:1.2385   3rd Qu.:1.2462   3rd Qu.:1.4412  
+ # Max.   :2.4997   Max.   :3.1947   Max.   :2.4603  
+
+# Sampled
+ #  O_vs_E_ever     O_vs_E_sputum     O_vs_E_xray    
+ # Min.   :0.0000   Min.   :0.0000   Min.   :0.0000  
+ # 1st Qu.:0.7335   1st Qu.:0.5960   1st Qu.:0.4738  
+ # Median :0.9162   Median :0.9567   Median :0.9546  
+ # Mean   :0.9743   Mean   :1.0101   Mean   :0.9518  
+ # 3rd Qu.:1.2403   3rd Qu.:1.2577   3rd Qu.:1.4630  
+ # Max.   :2.5040   Max.   :3.1904   Max.   :2.4728  
+
+```
+
+```{r calc_total_rates}
+
+dat_std %>% 
+  group_by(sex, agegp, hiv) %>% 
+  summarise(N = n(),
+            last12m = sum(last_test_12m == "Yes"),
+            ever = sum(ever_test == "Yes"),
+            sputum = sum(s50tb_medtest == 1),
+            xray = sum(s53tb_evrxray == 1)) -> total_rates
+# mutate(across(ever:xray, function(x) x/N, .names = "R_{.col}")) 
+
+```
+
+```{r calc_std_clinic}
+
+# By clinic area
+dat_std %>% 
+  group_by(clinic_id, sex, agegp, hiv) %>% 
+  summarise(n = n(),
+            n_ever = sum(ever_test == "Yes"),
+            n_sputum = sum(s50tb_medtest == 1),
+            n_xray = sum(s53tb_evrxray == 1)) %>% 
+  ungroup() %>% 
+  full_join(total_rates) %>% 
+  mutate(across(ever:xray, function(x) x*n/N, .names = "E_{.col}")) %>% 
+  group_by(clinic_id) %>% 
+  summarise(across(E_ever:E_xray, sum),
+            across(n_ever:n_xray, sum)) %>% 
+  ungroup() %>% 
+  mutate(O_vs_E_ever = n_ever/E_ever,
+         O_vs_E_sputum = n_sputum/E_sputum,
+         O_vs_E_xray = n_xray/E_xray) -> dat_std_E
+
+```
+
+```{r plot_std_clinic}
+
+# Plot observed over standardised rates
+plot_byarea(dat_std_E, clinicarea, varname = "O_vs_E_ever", lab = "O/E", midpoint = 1) +
+  labs(title = "Observed versus expected rates of ever testing, by clinic area",
+       subtitle = "Standardised by age, sex and HIV")
+
+ggsave(here::here(figdir,"std_test_history_byclinic.png"), 
+       height = 5, width = 6)
+
+dat_std_E %>% 
+  pivot_longer(O_vs_E_sputum:O_vs_E_xray) %>% 
+  mutate(name = factor(name, labels = c("Sputum", "CXR"))) %>% 
+  plot_byarea(clinicarea, varname = "value", lab = "O/E", midpoint = 1) +
+  facet_wrap(~name) +
+  labs(title = "Observed versus expected rates of testing, by type and clinic area",
+       subtitle = "Standardised by age, sex and HIV")
+ggsave(here::here(figdir,"std_test_history_byclinic_type.png"), 
+       height = 5, width = 10)
+
+```
+
+
+```{r calc_std_cluster}
+# By cluster
+dat_std %>% 
+  group_by(clustid, sex, agegp, hiv) %>% 
+  summarise(n = n(),
+            n_ever = sum(ever_test == "Yes"),
+            n_sputum = sum(s50tb_medtest == 1),
+            n_xray = sum(s53tb_evrxray == 1)) %>% 
+  ungroup() %>% 
+  full_join(total_rates) %>% 
+  mutate(across(ever:xray, function(x) x*n/N, .names = "E_{.col}")) %>% 
+  group_by(clustid) %>% 
+  summarise(across(E_ever:E_xray, sum),
+            across(n_ever:n_xray, sum)) %>% 
+  ungroup() %>% 
+  mutate(O_vs_E_ever = n_ever/E_ever,
+         O_vs_E_sputum = n_sputum/E_sputum,
+         O_vs_E_xray = n_xray/E_xray) -> dat_std_E
+
+```
+
+```{r plot_std_cluster}
+
+# Plot observed over standardised rates
+plot_byarea(dat_std_E, clust, varname = "O_vs_E_ever", lab = "O/E", midpoint = 1) +
+  labs(title = "Observed versus expected rates of ever testing, by cluster",
+       subtitle = "Standardised by age, sex and HIV")
+
+ggsave(here::here(figdir,"std_test_history_bycluster.png"), 
+       height = 5, width = 6)
+
+dat_std_E %>% 
+  pivot_longer(O_vs_E_sputum:O_vs_E_xray) %>% 
+  mutate(name = factor(name, labels = c("Sputum", "CXR"))) %>% 
+  plot_byarea(clust, varname = "value", lab = "O/E", midpoint = 1) +
+  facet_wrap(~name) +
+  labs(title = "Observed versus expected rates of testing, by type and cluster",
+       subtitle = "Standardised by age, sex and HIV")
+ggsave(here::here(figdir,"std_test_history_bycluster_type.png"), 
+       height = 5, width = 10)
+
+```
+
+```{r calc_plot_std_12m_cluster}
+
+# Tested in last 12m, by cluster
+dat_std %>% 
+  group_by(clustid, sex, agegp, hiv) %>% 
+  summarise(n = n(),
+            n_12m = sum(last_test_12m == "Yes")) %>% 
+  ungroup() %>% 
+  full_join(total_rates) %>% 
+  mutate(E_12m = last12m*n/N) %>% 
+  group_by(clustid) %>% 
+  summarise(E_12m = sum(E_12m),
+            n_12m = sum(n_12m)) %>% 
+  ungroup() %>% 
+  mutate(O_vs_E_12m = n_12m/E_12m) -> dat_std_E
+
+# Plot observed over standardised rates
+plot_byarea(dat_std_E, clust, varname = "O_vs_E_12m", lab = "O/E", midpoint = 1) +
+  labs(title = "Observed versus expected rates of testing in the last 12m, by cluster",
+       subtitle = "Standardised by age, sex and HIV")
+
+ggsave(here::here(figdir,"std_test12m_bycluster.png"), 
+       height = 5, width = 6)
+```

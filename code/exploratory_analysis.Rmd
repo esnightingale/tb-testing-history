@@ -35,7 +35,7 @@ figdir <- "testing history/figures"
 ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
 
 # Source model coeff plot
-source(here::here("testing history","code","Efxplot.R"), echo=TRUE)
+source(here::here("code","Efxplot.R"), echo=TRUE)
 
 ```
 
