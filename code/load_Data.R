@@ -1,14 +1,20 @@
 ################################################################################
-## LOAD DATA ##
+##                          Setup analysis data                               ##
+################################################################################
 
 library(tidyverse)
 library(sf)
 library(ggmap)
 
+datadir <- "C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data"
+
+# Source utility functions
+list.files(here::here("code","utils"), full.names = TRUE) %>% purrr::walk(source)
+
 #-----------#
 # Geography #
 
-# Cluster/HSA polygons and clinic locations
+# Cluster/HSA/clinic area polygons and clinic locations
 clust <- readRDS(here::here("data","clusters.rds")) %>% # Survey clusters
   mutate(clustid = as.numeric(gsub("c","",cluster)))
 data("clinics", package="BlantyreTBEpi") # TB clinics
@@ -18,6 +24,16 @@ data("hsas", package="BlantyreTBEpi") # Health service areas
 clust <- st_transform(clust, st_crs(4326))
 clinics <- st_transform(clinics, st_crs(4326))
 hsas <- st_transform(hsas, st_crs(4326))
+
+# Link clusters to clinics
+clust_clinic <- read_csv(here::here("data","PreRandomisationClustData_23May2016.csv")) %>% 
+  arrange(close_clin) %>% 
+  mutate(clustid = as.numeric(gsub("C","",clid)),
+         clinic_id = as.numeric(as.factor(close_clin))) 
+clinicarea <- clust %>% 
+  full_join(clust_clinic) %>% 
+  group_by(clinic_id, close_clin) %>% 
+  summarise()
 
 # Extract a base map layer to the extent of cluster polygons
 bb <- st_bbox(clust)
@@ -29,7 +45,7 @@ blt_lines <- get_map(location = e, source = "stamen", maptype = "terrain", zoom 
 # Population #
 
 # Worldpop Malawi population count raster
-pop.path <- here::here("data","mwi_ppp_2020_UNadj.tif")
+pop.path <- here::here("data","mwi_ppp_2019_UNadj.tif")
 popMLW <- raster::raster(x = pop.path)
 
 # Crop to same map extent
@@ -65,43 +81,12 @@ prev_clust <- readRDS(here::here("data","dat_scale.rds")) %>%
   mutate(clust_inc_1518 = 1000*mean(c_across(starts_with("inc_"))))
 
 # Individual data
-dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data/survey_clean.rds") %>% 
-  dplyr::select(today, ind_id, s02cl_id, 
-                # Household data
-                hh_id, gps_lat, gps_lng, gps_alt, gps_acc, hh_per_room, pov_score,h22hh_step, 
-                # Individual data
-                s07sex, sex, s09age, agegp, hiv_combined,
-                # Current TB 
-                any_cough, any_tb_symp,
-                # Known TB
-                s60tb_anyone, s62tb_famtb, s65tb_died,
-                
-                ## EXTENDED ONLY ##
-                
-                # Ever TB test/diagnosis
-                s50tb_medtest, s51tb_spnum, s53tb_evrxray, s54tb_xraynum, 
-                s56tb_evrtst, 
-                # self-assessed sick, current trt
-                s30tb_sick, s57tb_treat,
-                # Service usage
-                s111serv_hosp, s111serv_hosp_period) %>%
-  mutate(pov_score_exp = boot::inv.logit(pov_score),
-         pov_quant = ntile(pov_score, 6),
-         pov01 = (pov_score > 0.5),
-         any_tb_symp = as.factor(any_tb_symp),
-         current_trt = factor((s57tb_treat == 1), 
-                              levels = c(FALSE,TRUE), 
-                              labels = c("No","Yes")),
-         incl_extended = !is.na(s50tb_medtest),
-         test_history = factor((s50tb_medtest == 1 | s53tb_evrxray == 1), 
-                               levels = c(FALSE,TRUE), 
-                               labels = c("No","Yes"))) %>% 
-  rename(wealth_step = h22hh_step) %>% 
-  # Count participants per cluster
-  group_by(s02cl_id) %>% 
-  mutate(clust_N_tot = n(),
-         clust_N_ext = sum(incl_extended)) %>% 
-  ungroup() 
+dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data/analysis_data.rds") %>% 
+  mutate(agegp2 = factor(cut(s09age, breaks = c(17,24,34,44,54,max(s09age, na.rm=T)))),
+         pov_score_scale = -scale(pov_score),
+         wealth_quant = as.factor(ntile(pov_score_scale, 6)))
 
+dat <- dat_all %>% 
+  filter(incl_extended)
 
 ################################################################################

@@ -1,0 +1,288 @@
+---
+title: "Primary analysis"
+output: html_notebook
+---
+
++ Compare additions of poverty measures to baseline model 
+
+```{r setup}
+
+set.seed(0000)
+
+library(tidyverse)
+library(gtools)
+library(ggmap)
+library(sf)
+library(patchwork)
+library(brms)
+library(spdep)
+library(tidybayes)
+library(sjPlot)
+library(bayesplot)
+library(broom.mixed)
+
+# devtools::install_github("m-clark/visibly")
+# library(visibly)
+
+theme_set(theme_minimal())
+
+figdir <- "figures/fit"
+
+# Fix default ggsave background
+ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
+
+```
+
+```{r load_data}
+
+source(here::here("code/load_data.R"), echo=TRUE)
+dat_nona <- readRDS(here::here("data","analysis_data_primary.rds"))
+fit_base <- readRDS(here::here("output","fit_base.rds"))
+
+```
+
+# Adjusting for prior TB prevalence
+
+```{r add_tbprev}
+
+fit_base2 <- update(fit_base, 
+                    formula = "test01 ~ sex*agegp + hiv + clust_inc_1518 + (1|clustid)",
+                    newdata = dat_nona)
+
+summary(fit_base)
+summary(fit_base2)
+
+exp(fixef(fit_base2))
+
+```
+
+# Missing HIV status
+
+```{r make_data}
+
+cluster_inc <- prev_clust %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(cluster_number, clust_inc_1518)
+
+# First drop 3 with missing ages
+dat_naHIV <- dat %>% 
+  filter(!is.na(agegp))
+
+# Redefine HIV status
+dat_naHIV$hiv <- dat_naHIV$hiv_combined
+dat_naHIV$hiv[dat_naHIV$hiv == "HIV positive ART"] <- "HIV positive"
+
+dat_naHIV <- mutate(dat_naHIV, 
+              test01 = as.numeric(ever_test == "Yes"),
+              agegp = factor(cut(s09age, breaks = c(17,24,34,44,54,max(dat$s09age, na.rm=T)))),
+              hiv = factor(hiv, levels = c("HIV negative","HIV positive"), labels = c("HIV negative","HIV positive")),
+              pov_score_scale = -scale(pov_score),
+              wealth_quant = as.factor(ntile(pov_score_scale, 6)),
+              pov01 = as.factor(pov_score > 0),
+              wealth_quant1 = as.factor(wealth_quant == 1),
+              wealth_step = as.factor(wealth_step),
+              wealth_step1 = as.factor(wealth_step == 1),
+              know_test = as.factor(s60tb_anyone == 1),
+              know_trt = as.factor(s62tb_famtb == 1),
+              know_died = as.factor(s65tb_died == 1)) %>% 
+  full_join(cluster_inc, by = c("clustid" = "cluster_number"))
+
+dat_uHIV <- dat_naHIV %>% 
+  mutate(hiv = factor(replace_na(as.character(hiv), "HIV unknown"), 
+         levels = c("HIV negative","HIV positive", "HIV unknown"), 
+         labels = c("HIV negative","HIV positive", "HIV unknown")))
+
+# Check
+dat_uHIV %>% 
+  dplyr::select(test01, sex, agegp, hiv, pov_score, wealth_step) %>% 
+  summary()
+
+```
+
+
+
+First simply refit with HIV unknown as a factor level. Still drop missing poverty scores at this stage for comparability. 
+
+```{r hiv_unkown}
+
+fit_base2 <- update(fit_base, formula = "test01 ~ sex*agegp + hiv + (1|clustid)", 
+                    newdata = filter(dat_uHIV, !is.na(pov_score)))
+summary(fit_base2)
+exp(fixef(fit_base2))
+```
+
+```{r plot_hiv_fixeff}
+
+labs <- c("Male",
+          "Age (24,34]", "Age (34,44]", "Age (44,54]", "Age (54,87]",
+          "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age (54,87]",
+          "HIV positive", "HIV unknown")
+
+get_model_data(fit_base2, type = "est", transform = NULL) %>% 
+  mutate(Model = "Unknown HIV included") %>% 
+  bind_rows(
+    mutate(get_model_data(fit_base, type = "est", transform = NULL),
+           Model = "Unknown HIV excluded")) %>% 
+  mutate(order = row_number(),
+         term = factor(term, levels = unique(term)[c(1:5,8:11,6,7)])) %>% 
+  ungroup() -> logORtab
+
+pos <- position_dodge()
+logORtab %>% 
+  ggplot(aes(term, estimate, col = Model)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_linerange(aes(ymin = conf.low, ymax = conf.high), position = position_dodge(width = 0.5), lwd = 1) +
+  geom_linerange(aes(ymin = conf.low50, ymax = conf.high50), position = position_dodge(width = 0.5), lwd = 1.2) +
+  geom_point(position = position_dodge(width = 0.5), col = "white", pch = 15, cex = 0.8) +
+  coord_flip() +
+  scale_x_discrete(limits = rev(levels(logORtab$term)), labels = rev(labs)) +
+  labs(x = "", y = "Estimate (log-odds ratio)")
+
+
+plot_model(fit_base, 
+           order.terms = c(1,2,3,4,5,7,8,9,10,6),
+           transform = NULL, 
+           title = "",
+           axis.labels = rev(c("Male","Age (24,34]", "Age (34,44]", "Age (44,54]", "Age (54,87]",
+                           "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age (54,87]",
+                           "HIV positive"))
+           )
+
+ggsave(here::here(figdir, "compare_unknownHIV_incl_excl.png"), height = 6, width = 6)
+
+```
+
+## Multiple imputation
+
+```{r mi_base}
+
+imp <- mice(dat, )
+```
+
+## Fit with poverty measures
+
+```{r priors}
+
+priors <- c(prior(normal(-2, 2), class = Intercept),
+            prior(normal(0,10), class = b),
+            prior(cauchy(0,1), class = sd, group = "clustid"))
+
+```
+
+```{r add_pov}
+
+# Explore relative significance of the two poverty measures
+f1 <- test01 ~ sex*agegp + hiv + pov_score_scale + (1 | clustid)
+f2 <- test01 ~ sex*agegp + hiv + wealth_quant + (1 | clustid)
+f3 <- test01 ~ sex*agegp + hiv + wealth_step + (1 | clustid)
+
+f.list <- list(score_c = f1,
+               score_q = f2, 
+               step = f3)
+
+fit_list_pov <- lapply(f.list, 
+                       function(f) brm(f, data = dat_nona, prior = priors, family = "bernoulli"))
+saveRDS(fit_list_pov, here::here("output","fit_list_pov.rds"))
+
+```
+
+```{r summ_pov}
+
+summ_list_pov <- lapply(fit_list_pov, summary)
+
+bind_rows(
+  summary(fit_base)$random$clustid,
+  bind_rows(lapply(summ_list_pov, 
+                   function(summ) summ$random$clustid))) %>% 
+  mutate(Model = factor(c("Baseline","PMT score continuous", "PMT score quantile", "Self-assessed wealth"))) -> ranef_sd_tab
+
+ranef_sd_tab %>% 
+  ggplot(aes(Estimate, Model, xmin = `l-95% CI`, xmax = `u-95% CI`)) +
+  geom_errorbar(width = 0.2) +
+  geom_point() +
+  labs(y = "", x = "Estimated SD of random intercept") +
+  scale_y_discrete(limits = rev(levels(ranef_sd_tab$Model)))
+
+ggsave(here::here(figdir, "compare_reffSD_pov.png"), height = 6, width = 6)
+
+```
+
+```{r comp_looic}
+
+fit_base <- add_criterion(fit_base, "loo")
+fit_list_pov <- lapply(fit_list_pov, add_criterion, "loo")
+
+loo_comp <- lapply(fit_list_pov, function(fit) loo_compare(fit_base, fit, criterion = "loo"))
+loo_comp
+
+mod_wts <- lapply(fit_list_pov, function(fit) model_weights(fit_base, fit))
+mod_wts
+
+```
+
+```{r plot_fixeff}
+
+plot_fixeff <- function(fit, order = NULL, labs = NULL, title = NULL){
+  plot_model(fit, 
+             order.terms = order,
+             transform = NULL, 
+             title = title,
+             axis.labels = labs) + 
+    geom_hline(yintercept = 0, lty = "dashed", col = "grey") -> p
+  return(p)
+}
+
+lapply(fit_list_pov, plot_fixeff)
+
+```
+
+```{r tidy_pov_fixeff}
+
+get_model_data(fit_list_pov[[1]], type = "est", terms = "pov_score_scale") %>% 
+  bind_rows(get_model_data(fit_list_pov[[2]], type = "est", terms = paste0("wealth_quant",2:6))) %>% 
+  bind_rows(get_model_data(fit_list_pov[[3]], type = "est", terms = paste0("wealth_step",2:6))) %>% 
+  mutate(order = row_number(),
+         term = factor(term)) -> ORtab
+
+ORtab
+
+```
+
+```{r plot_pov_fixeff}
+
+labs <- c("PMT score - continuous",
+          "PMT score - 2nd quantile",
+          "3rd quantile",
+          "4th quantile",
+          "5th quantile",
+          "6th quantile",
+          "Self-assessed wealth - 2nd step",
+          "3rd step",
+          "4th step",
+          "5th step",
+          "6th step")
+
+get_model_data(fit_list_pov[[1]], type = "est", terms = "pov_score_scale", transform = NULL) %>% 
+  bind_rows(get_model_data(fit_list_pov[[2]], type = "est", terms = paste0("wealth_quant",2:6), transform = NULL)) %>% 
+  bind_rows(get_model_data(fit_list_pov[[3]], type = "est", terms = paste0("wealth_step",2:6), transform = NULL)) %>%
+  # filter(term != "pov_score_scale") %>%
+  mutate(order = row_number(),
+         term = factor(term, levels = c("pov_score_scale", paste0("wealth_quant",2:6),paste0("wealth_step",2:6))),
+         level = as.numeric(gsub("wealth_quant", "", gsub("wealth_step","",term)))) %>% 
+  ungroup() -> logORtab
+
+logORtab %>% 
+  ggplot(aes(term, estimate, col = level)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_vline(xintercept = 5.5, col = "grey") +
+  geom_linerange(aes(ymin = conf.low, ymax = conf.high), lwd = 1) +
+  geom_linerange(aes(ymin = conf.low50, ymax = conf.high50), lwd = 1.2) +
+  geom_point() +
+  coord_flip() +
+  scale_x_discrete(limits = rev(levels(logORtab$term)), labels = rev(labs)) +
+  guides(col = "none") +
+  labs(x = "", y = "Estimate (log-odds ratio)")
+
+ggsave(here::here(figdir, "compare_pov_coeffs.png"), height = 6, width = 6)
+
+```

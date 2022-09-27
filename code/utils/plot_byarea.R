@@ -16,7 +16,7 @@ plot_byarea <- function(dat, areas, varname, lab = NULL, midpoint = NULL){
   ggmap(blt_lines, 
         base_layer = ggplot(dat)) +
     geom_sf(aes(fill = v), alpha = 0.7) +
-    scale_fill_gradient2(midpoint = midpoint) +
+    scale_fill_gradient2(midpoint = midpoint, low = "red", high = "blue") +
     labs(fill = lab,
          caption = caption) +
     theme(axis.text = element_blank()) -> p

@@ -20,7 +20,7 @@ make_tab <- function(fact_vars, Var2){
 tabs1 <- purrr::map2(fact_vars, names(fact_vars), tab_fac, Var2 = Var2)
 
 tab <- bind_rows(tabs1) %>% 
-  pivot_wider(names_from = "Var2", values_from = "Freq") %>% View()
+  pivot_wider(names_from = "Var2", values_from = "Freq") %>%
   mutate(N = No + Yes,
          summ_no = paste0(No, " (",round(No*100/(No + Yes),1), ")"),
          summ_yes = paste0(Yes, " (",round(Yes*100/(No + Yes),1), ")")) %>% 

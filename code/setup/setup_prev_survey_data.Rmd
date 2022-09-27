@@ -1,0 +1,529 @@
+---
+title: "Prev_survey_trial"
+author: "Helena Feasey"
+date: "13/01/2022"
+output: html_document
+---
+
+## 1. Backgound
+
+
+<br>
+
+## 2. Set-up
+
+Load all required packages for analysis.
+
+```{r setup, echo=FALSE, include=FALSE, message=FALSE, comment=NA, warning=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)    #for data manipulation
+library(knitr)        #for tables
+library(haven)
+library(labelled)
+library(lubridate)
+library(sf)
+library(janitor)
+library(zoo)
+library(epitools)
+library(dplyr)
+```
+
+<br>
+
+## 3. Import datasets
+
+Import data required for the analysis.
+
+```{r import, message=FALSE, warning=FALSE}
+
+datadir <- "C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data"
+
+# individual_survey <- read_dta(file.path(datadir,"individual.dta"))
+household_survey <- read_dta(file.path(datadir,"household_wide.dta")) %>% 
+  haven::zap_formats() %>%
+  haven::zap_label() %>%
+  haven::zap_label() %>% 
+  as_tibble()
+screening <- read_dta(file.path(datadir, "ind_xray_hts.dta")) %>%
+  haven::zap_formats() %>%
+  haven::zap_label() %>%
+  haven::zap_label() %>% 
+  as_tibble()
+
+```
+
+<br>
+
+## 4 Tidy
+
+```{r tidy}
+table(household_survey$arm, useNA = "always")
+
+  
+# Clean up household survey
+household_survey <- household_survey %>%
+  mutate(arm = case_when(arm==0 ~ "SOC",
+                         arm==1 ~ "ACF"),
+         arm = fct_relevel(arm, "ACF", "SOC"))
+
+
+#Clean up demographic and clinical characteristics - individual + HTS survey - 'screening data'
+screening <- screening %>%
+mutate(sex = case_when(s07sex==1 ~ "Male",
+                         s07sex==2 ~ "Female",
+                         s07sex==99 ~ NA_character_),
+         sex = fct_relevel(sex, "Female", "Male")) %>%
+  mutate(arm = case_when(arm==0 ~ "SOC",
+                         arm==1 ~ "ACF"),
+         arm = fct_relevel(arm, "ACF", "SOC")) %>%
+  mutate(TB_contact = case_when(s62tb_famtb==1 ~ "Yes",
+                                 s62tb_famtb==2 ~ "No"),
+         TB_contact = fct_relevel(TB_contact, "Yes", "No")) %>%
+  mutate(previous_tb = case_when(s56tb_evrtst==1 ~ "Yes",
+                                  s56tb_evrtst==2 ~ "No"),
+         previous_tb = fct_relevel(previous_tb, "Yes", "No")) %>%
+  mutate(s74hiv_rectest = case_when(s74hiv_rectest==1 ~ "Positive",
+                                    s74hiv_rectest==2 ~ "Negative",
+                                    s74hiv_rectest==3 ~ "Inconclusive",
+                                    s74hiv_rectest==4 ~ "Unknown",
+                                    TRUE ~ NA_character_),
+         s74hiv_rectest = fct_relevel(s74hiv_rectest, "Positive", "Negative", "Inconclusive", "Unknown")) %>%
+  mutate(s80hiv_art = case_when(s80hiv_art==1 ~ "Yes",
+                                    s80hiv_art==2 ~ "No",
+                                    s80hiv_art==3 ~ "Can't Reveal",
+                                    TRUE ~ NA_character_),
+         s80hiv_art = fct_relevel(s80hiv_art, "Yes", "No", "Can't Reveal")) %>%
+  mutate(s82hiv_crart = case_when(s82hiv_crart==1 ~ "Yes",
+                                    s82hiv_crart==2 ~ "No",
+                                    TRUE ~ NA_character_),
+         s82hiv_crart = fct_relevel(s82hiv_crart, "Yes", "No")) %>%
+  mutate(d12sumres = case_when(d12sumres==1 ~ "Previous positive not on ART",
+                               d12sumres==2 ~ "Previous positive on ART",
+                               d12sumres==3 ~ "New negative",
+                               d12sumres==4 ~ "New positive",
+                               d12sumres==5 ~ "Not done",
+                               TRUE ~ NA_character_),
+         d12sumres = fct_relevel(d12sumres, "Previous positive not on ART", "Previous positive on ART", "New negative", "New positive", "Not done")) %>%
+    mutate(agegp = case_when(between(s09age,18,24) ~ "18-24",
+                           between(s09age,25,34) ~ "25-34",
+                           between(s09age,35,44) ~ "35-44",
+                           between(s09age,45,54) ~ "45-54",
+                           between(s09age,55,64) ~ "55-64",
+                           s09age > 64 ~ "65+" ),
+          agegp = factor(agegp,levels = c("18-24","25-34","35-44",
+                                          "45-54","55-64","65+")))
+
+```
+
+## 5 Aggregating HIV information
+
+Tidy HIV screening variables. 
+Define overall HIV status according to screening result, self-reporting of previous testing and self-reporting of ART use. 
+
+```{r tidy_hiv}
+
+# Create overall HIV/ART status variable
+table(screening$s74hiv_rectest, useNA = "always")
+table(screening$s80hiv_art, useNA = "always")
+table(screening$s82hiv_crart, useNA = "always")
+table(screening$s74hiv_rectest, screening$s80hiv_art, useNA = "always")
+table(screening$s80hiv_art, screening$s82hiv_crart, useNA = "always")
+table(screening$s74hiv_rectest, screening$s82hiv_crart, useNA = "always")
+
+individual_survey <- screening
+
+individual_survey <- individual_survey %>%
+  mutate(hiv_art = case_when(s82hiv_crart=="Yes" ~ "HIV positive ART",
+                             s82hiv_crart=="No" & s74hiv_rectest=="Positive"  ~ "HIV positive",
+                             # s82hiv_crart=="No" & (s74hiv_rectest=="Negative" | s74hiv_rectest=="Positive")  ~ "HIV positive",
+                             (s82hiv_crart =="No"| is.na(s82hiv_crart)) & s74hiv_rectest=="Negative" ~ "HIV negative",
+         # is.na(s82hiv_crart) & s74hiv_rectest=="Negative" ~ "HIV negative",
+         is.na(s82hiv_crart) & (s74hiv_rectest=="Inconclusive" | s74hiv_rectest=="Unknown") ~ "HIV unknown"),
+         hiv_art = fct_relevel(hiv_art, "HIV positive ART", "HIV positive", "HIV negative", "HIV unknown"))
+
+table(individual_survey$hiv_art, useNA = "always")
+
+# Re-do d12sumres on basis of actual testing data
+individual_survey <- individual_survey %>% mutate(rmb_hiv=case_when(
+  d07hivst==1 & d11unig==1 ~ "old pos", # said HIV pos, unig pos
+  d07hivst==1 & d11unig==2 ~ "neg*", # this is the one person who said HIV pos but unigold neg
+  d07hivst!=1 & d09oraq==1 & d10detr==1 & d11unig==1 ~ "new pos", # new pos, all confirmed
+  is.na(d07hivst) & d09oraq==1 & d10detr==1 & d11unig==1 ~ "new pos", # new pos, all confirmed. NA to HIV previous HIV status
+  d07hivst!=1 & d09oraq==2 & d10detr==2 & is.na(d11unig) ~ "neg", # negative (oraq and determine, unigold not done)
+  is.na(d07hivst) & d09oraq==2 & d10detr==2 & is.na(d11unig) ~ "neg", # negative (oraq and determine, unigold not done) - but didn't answer the HIV status question
+  d05const==2 ~ "no test",
+  d07hivst==2 & d09oraq==2 & d10detr==1 & d11unig==1 ~ "new pos*", # these are two people who were neg on oraquick, but pos on determine and unigold
+  d07hivst==2 & d09oraq==1 & d10detr==2 & d11unig==2 ~ "neg*", # these are three people who were pos on oraquick, but neg on determine and unigold
+  d07hivst==2 & d09oraq==1 & d10detr==1 & d11unig==2 ~ "indeterminate", # this is one person who was oraq and determine pos, but unigold neg
+)) 
+
+individual_survey %>% tabyl(rmb_hiv)
+individual_survey %>% tabyl(rmb_hiv,d08art)
+
+# Match d12sumres values
+individual_survey <- individual_survey %>% mutate(hiv = case_when(
+  (rmb_hiv=="old pos" & d08art==1) ~ "Previous positive on ART",
+  (rmb_hiv=="old pos" & d08art==2) ~ "Previous positive not on ART",
+    rmb_hiv=="new pos" ~ "New positive",
+    rmb_hiv=="new pos*" ~ "New positive",
+      rmb_hiv=="neg*" ~ "New negative",
+      rmb_hiv=="neg" ~ "New negative",
+      rmb_hiv=="indeterminate" ~ "New negative",
+      rmb_hiv=="no test" ~ "Not done"),
+          hiv = factor(hiv,levels = c("Previous positive on ART","Previous positive not on ART","New positive","New negative","Not done")))
+
+individual_survey %>% tabyl(hiv)
+
+# Create combined HIV variable based on testing data and if none using reported data
+individual_survey <- individual_survey %>%
+  mutate(hiv_combined = hiv) %>%
+  mutate(hiv_combined = case_when(hiv=="Previous positive on ART" ~ "HIV positive ART",
+                                  hiv=="Previous positive not on ART" ~ "HIV positive",
+                                  hiv=="New negative" ~ "HIV negative",
+                                  hiv=="New positive" ~ "HIV positive",
+                              (hiv=="Not done" | is.na(hiv)) & hiv_art=="HIV positive ART" ~ "HIV positive ART",
+                             (hiv=="Not done" | is.na(hiv)) & hiv_art=="HIV positive" ~ "HIV positive",
+                             (hiv=="Not done" | is.na(hiv)) & hiv_art=="HIV negative" ~ "HIV negative",
+                             (hiv=="Not done" | is.na(hiv)) & hiv_art=="HIV unknown" ~ "HIV unknown",
+                             (hiv=="Not done" | is.na(hiv)) & is.na(hiv_art) ~ "HIV unknown"),
+         hiv_combined = fct_relevel(hiv_combined, "HIV positive ART", "HIV positive", "HIV negative"))
+
+table(individual_survey$hiv_combined, useNA = "always")
+
+individual_survey %>% 
+  dplyr::select(s72hiv_ever:s86hiv_attend, d12sumres, hiv_art:hiv_combined) %>% 
+  dplyr::filter(hiv_combined == "HIV unknown") -> hiv_miss
+
+summary(hiv_miss)
+
+hiv_miss$hiv_combined2 = hiv_miss$hiv_combined
+
+
+
+```
+
+## 6 Tidy TB definition and symptoms
+
+```{r tidy_tb}
+# TB symptoms tidy
+individual_survey <- individual_survey %>%
+  mutate(night_sweats = case_when(s69tb_swts==1 ~ "Yes",
+                                 s69tb_swts==2 ~ "No"),
+         night_sweats = fct_relevel(night_sweats, "Yes", "No")) %>%
+  mutate(weight_loss = case_when(s70tb_wght==1 ~ "Yes",
+                                  s70tb_wght==2 ~ "No"),
+         weight_loss = fct_relevel(weight_loss, "Yes", "No")) %>%
+  mutate(fever = case_when(s71tb_fvr==1 ~ "Yes",
+                                  s71tb_fvr==2 ~ "No"),
+         fever = fct_relevel(fever, "Yes", "No")) %>%
+  mutate(xray = case_when(x07xres==1 ~ "Normal",
+                                  x07xres==2 ~ "Abnormal"),
+         xray = fct_relevel(xray, "Abnormal", "Normal"))
+ 
+         
+# Chronic cough variable (2 weeks or more)
+range(individual_survey$s68tb_cghdur[individual_survey$s68tb_cghdur_period == 4], na.rm=TRUE)
+
+individual_survey <- individual_survey %>%
+  mutate(chronic_cough = case_when(s68tb_cghdur_period==4 & s68tb_cghdur>0 ~ "Yes",
+                                  s68tb_cghdur_period==3 & s68tb_cghdur>0 ~ "Yes",
+                                  s68tb_cghdur_period==2 & s68tb_cghdur>0 ~ "Yes",
+                                  s68tb_cghdur_period==1 & s68tb_cghdur>13 ~ "Yes",
+                                  s68tb_cghdur_period==1 & s68tb_cghdur<14 ~ "No",
+                                  is.na(s68tb_cghdur_period) ~ "No",
+                                  is.na(s68tb_cghdur) ~ "No")) 
+
+
+table(individual_survey$chronic_cough, useNA = "always")
+
+# Any cough - individual survey or X-ray data
+individual_survey %>% tabyl(s66tb_cough,x06cough)
+
+individual_survey <- individual_survey %>%
+  mutate(any_cough = case_when(s66tb_cough==1 ~ "Yes",
+                                  x06cough==1 ~ "Yes",
+                                  s66tb_cough==2 & x06cough==2 ~ "No",
+                                  s66tb_cough==2 & is.na(x06cough) ~ "No"),
+                               any_cough = fct_relevel(any_cough, "Yes", "No")) 
+
+individual_survey %>% tabyl(any_cough,x06cough)
+individual_survey %>% tabyl(any_cough,s66tb_cough)
+individual_survey %>% tabyl(any_cough)
+individual_survey %>% tabyl(any_cough,xray)
+
+# Any TB symptom (cough any duration)
+individual_survey <- individual_survey %>%
+  mutate(any_tb_symp = if_else(any_cough=="Yes" | s69tb_swts==1 | s70tb_wght==1 | s71tb_fvr==1, "Yes","No"))
+                                  
+table(individual_survey$any_tb_symp, useNA = "always")
+
+# Eligible for sputum submission (NB 2407 no X-ray. 98 of these had cough in survey & 2309 no cough)
+individual_survey <- individual_survey %>%
+  mutate(sputum_eligible = case_when(xray=="Abnormal" ~ "Yes",
+                                     any_cough=="Yes" ~ "Yes",
+                                     xray=="Normal" & any_cough=="No" ~ "No",
+                                     any_cough=="No" & is.na(xray) ~ "No"))
+
+individual_survey %>% tabyl(sputum_eligible)
+# individual_survey %>% tabyl(any_cough)
+# individual_survey %>% tabyl(x06cough)
+# individual_survey %>% tabyl(any_cough,s66tb_cough)
+# individual_survey %>% tabyl(x06cough,s66tb_cough)
+# individual_survey %>% tabyl(any_cough,any_tb_symp)
+
+```
+
+<br>
+
+## 7 Tidy testing history
+
+```{r last_test}
+
+dat_na <- function(x){
+  x[grepl("NA",x)] <- NA
+  return(x)
+}
+
+
+individual_survey %>%
+  dplyr::select(s52tb_stsptmon, s52tb_lstsptyr, s55tb_lstsxraymon, s55tb_lstxraytyr) %>% 
+  summary()
+
+individual_survey <- individual_survey %>%  
+  mutate(# Ever test
+         ever_test = factor((s50tb_medtest == 1 | s53tb_evrxray == 1), 
+                               levels = c(FALSE,TRUE), 
+                               labels = c("No","Yes")),
+         # Last test
+         last_sputum_m = s52tb_stsptmon,
+         last_sputum_y = s52tb_lstsptyr,
+         last_xray_m = s52tb_stsptmon,
+         last_xray_y = s52tb_lstsptyr,
+         # Define month as June if year is known
+         last_sputum_m = replace(s52tb_stsptmon, 
+                                  (s52tb_stsptmon == 77 & !s52tb_lstsptyr %in% c(888,999)), 
+                                  6),
+         last_xray_m = replace(s55tb_lstsxraymon, 
+                                     (s55tb_lstsxraymon == 77 & !s55tb_lstxraytyr %in% c(888,999)), 
+                                     6),
+         # Otherwise, redefine missing codes as NA
+         across(c(s52tb_stsptmon, s55tb_lstsxraymon), 
+                function(x) na_if(x, 77)),
+         across(c(s52tb_lstsptyr, s55tb_lstxraytyr), 
+                function(x) na_if(na_if(x, 888),999)), 
+         # Paste together (imputed) day/month/year and convert to date
+         last_sputum = paste(1, s52tb_stsptmon, s52tb_lstsptyr, sep = "/"),
+         last_xray = paste(1, s55tb_lstsxraymon, s55tb_lstxraytyr, sep = "/"),
+         across(c(last_sputum, last_xray), dat_na),
+         across(c(last_sputum, last_xray), dmy),
+         # Identify last test and whether it occurred within 12m prior to interview. 
+         # If last date = NA define outcome as false
+         last_test = pmax(last_sputum, last_xray, na.rm = T),
+         last_test_12m = factor(replace_na(
+           (interval(last_test, today) %/% months(1) < 12), 
+           FALSE))) 
+
+individual_survey %>% 
+  filter(ever_test == "Yes") %>% 
+  pull(last_test) %>% 
+  summary()
+#         Min.      1st Qu.       Median         Mean      3rd Qu.         Max.         NA's 
+# "1995-05-01" "2018-01-01" "2019-03-01" "2017-07-18" "2019-09-01" "2019-12-01"        "260" 
+
+```
+
+## 5 Overcrowding
+
+```{r table}
+table(household_survey$h28rm_roomnum)
+table(household_survey$h07hh_number)
+table(household_survey$h08hh_adults_num)
+
+# Mean hh_per_room by arm
+household_survey <- household_survey %>%
+  mutate(hh_per_room = h07hh_number / h28rm_roomnum)
+
+
+household_survey_arm <- household_survey %>%
+  dplyr::group_by(arm) %>%
+  dplyr::summarize(Mean = mean(hh_per_room))
+
+household_survey_arm %>%
+  tabyl(arm, Mean)
+
+t.test(hh_per_room ~ arm, data=household_survey)
+
+```
+<br>
+
+## 6 Poverty score
+
+```{r poverty}
+
+table(household_survey$h13hh_level_qual)
+table(household_survey$h14hh_sleep)
+
+#Create the poverty score
+#First make a look-up table with variables and coefficients 
+pov_lookup <- tribble(~var,            ~value,   ~coef,
+                       "h13hh_level_qual",  1,   0,
+                       "h13hh_level_qual",  2,   -0.1070230,
+                       "h13hh_level_qual",  3, -0.4727860,
+                       "h13hh_level_qual", 4, -0.3210555,
+                       "h13hh_level_qual", 5, -14.1811944,
+                       
+                       "h14hh_sleep", 1, 0,
+                       "h14hh_sleep", 2, 0.6709013,
+                       "h14hh_sleep", 3, 0.3235319,
+                       "h14hh_sleep", 4, 0.4599334,
+                       "h14hh_sleep", 5, 0.7354924,
+                       "h14hh_sleep", 6, 2.9858984,
+                       "h14hh_sleep", 7, 0,
+                       "h14hh_sleep", 77, -0.6208952,
+                       
+                       "h15hh_electric", 1, 0, 
+                       "h15hh_electric", 2, 0.9590447,
+                       
+                       "h16hh_bank", 1, 0,
+                       "h16hh_bank", 2, 0.8831791,
+                       
+                       "h17hh_food", 1, 0,
+                       "h17hh_food", 2, -0.5573320,
+                      
+                       "h18hh_clothing", 1, 0,
+                       "h18hh_clothing", 2, -0.6375926,
+                       "h18hh_clothing", 3, -0.9265472,
+                       
+                       "h19hh_hifi", 1, 0,
+                       "h19hh_hifi", 2, 0.8729641,
+                       
+                       "h20hh_sofa", 1, 0,
+                       "h20hh_sofa", 2, 0.9942764,
+                       
+                       "h21hh_iron", 1, 0,
+                       "h21hh_iron", 2, 1.3393567
+                       )
+
+#Now calculate poverty scores and merge to baseline data
+temp_base <- household_survey %>%
+  dplyr::select(hh_id, h13hh_level_qual:h21hh_iron) %>%
+  dplyr::select(-h14hh_sleep_oth) %>%
+  gather(var, value, -hh_id)
+
+temp_base_b <- household_survey %>%
+  dplyr::select(hh_id, h07hh_number) %>%
+  mutate(h07hh_number = as.integer(h07hh_number)) %>%
+  mutate(hhsize_coef = 0.6222069 * h07hh_number) %>%
+  dplyr::select(-h07hh_number)
+
+temp_base <- left_join(temp_base, pov_lookup)
+
+temp_base <- temp_base %>%
+  dplyr::select(-value) %>%
+  spread(var, coef)
+
+temp_base <- left_join(temp_base, temp_base_b)
+
+temp_base <- temp_base %>%
+  mutate(pov_score = -8.5761747 +  (rowSums(select_(., "-hh_id")))) %>%
+  dplyr::select(hh_id, pov_score)
+
+household_survey <- left_join(household_survey, temp_base)
+
+rm(temp_base, temp_base_b)
+
+# Poverty score by arm
+household_poverty_arm <- household_survey %>%
+  dplyr::group_by(arm) %>%
+  dplyr::summarize(Mean = mean(pov_score))
+
+t.test(pov_score ~ arm, household_survey)
+
+# Generate wealth quartiles
+household_survey <- household_survey %>%
+          mutate(
+            wealth_quantil = ntile(pov_score, 4) 
+          )
+
+table(household_survey$arm, household_survey$wealth_quantil)
+wealth_quartileT<-table(household_survey$arm, household_survey$wealth_quantil)
+round(prop.table(wealth_quartileT,margin=1)*100,digits=1)
+chisq.test(wealth_quartileT)
+
+```
+
+<br>
+
+```{r link_clinic}
+
+# Link clusters to clinics
+
+clust_clinic <- read_csv(here::here("data","PreRandomisationClustData_23May2016.csv")) %>% 
+  mutate(s02cl_id = as.numeric(gsub("C","",clid)),
+         clinic_id = as.numeric(as.factor(close_clin))) %>% 
+  dplyr::select(clinic_id, close_clin, s02cl_id)
+
+individual_survey <- individual_survey %>% 
+  full_join(clust_clinic) 
+
+```
+
+```{r save_datasets}
+
+individual_survey <- ungroup(individual_survey)
+household_survey <- ungroup(household_survey)
+
+survey <- individual_survey %>% 
+  left_join(dplyr::select(household_survey, hh_id, h02cl_id, h44gpsid:gps_acc, total_hhmember:wealth_quantil, h22hh_step))
+
+saveRDS(individual_survey, file.path(datadir, "individual_clean.rds"))
+saveRDS(household_survey, file.path(datadir, "household_clean.rds"))
+saveRDS(survey, file.path(datadir, "survey_clean.rds"))
+
+```
+
+```{r setup_analysis_data}
+
+# Individual data
+dat <- survey %>% 
+  dplyr::select(today, ind_id, s02cl_id, clinic_id, close_clin,
+                # Household data
+                hh_id, gps_lat, gps_lng, gps_alt, gps_acc, hh_per_room, pov_score, h22hh_step, 
+                # Individual data
+                s07sex, sex, s09age, agegp, hiv, hiv_combined,
+                # Current TB 
+                any_cough, any_tb_symp,
+                # Known TB
+                s60tb_anyone, s62tb_famtb, s65tb_died,
+                
+                ## EXTENDED ONLY ##
+                
+                # Ever TB test/diagnosis
+                # Raw variables
+                s50tb_medtest, s53tb_evrxray,
+                # Generated variables
+                ever_test, last_sputum, last_xray, last_test, last_test_12m,
+                # s50tb_medtest, s51tb_spnum, s53tb_evrxray, s54tb_xraynum, s56tb_evrtst, 
+                # self-assessed sick, current trt
+                s30tb_sick, s57tb_treat,
+                # Service usage
+                s111serv_hosp, s111serv_hosp_period,
+                ) %>%
+  mutate(any_tb_symp = as.factor(any_tb_symp),
+         current_trt = factor((s57tb_treat == 1), 
+                              levels = c(FALSE,TRUE), 
+                              labels = c("No","Yes")),
+         last_test_12m = factor(last_test_12m, levels = c(FALSE,TRUE), labels = c("No","Yes")),
+         incl_extended = !is.na(s50tb_medtest)) %>% 
+  rename(clustid = s02cl_id,
+         wealth_step = h22hh_step) %>% 
+  # Count participants per cluster
+  group_by(clustid) %>% 
+  mutate(clust_N_tot = n(),
+         clust_N_ext = sum(incl_extended)) %>% 
+  ungroup() 
+
+saveRDS(dat, file.path(datadir, "analysis_data.rds"))
+
+```

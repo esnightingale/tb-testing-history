@@ -12,6 +12,7 @@
 library(tidyverse)
 library(lubridate)
 library(ggmap)
+library(ggspatial)
 library(sf)
 library(patchwork)
 library(spdep)
@@ -30,6 +31,22 @@ source(here::here("code/load_data.R"), echo=TRUE)
 source(here::here("code/utils/make_tab.R"), echo=TRUE)
 
 ################################################################################
+
+# Describe study region 
+
+ggmap(blt_lines, 
+      base_layer = ggplot(clust)) +
+  geom_raster(data = popBLT_df, aes(x, y, fill = mwi_ppp_2019_UNadj), alpha = 0.5) +
+  geom_sf(data = clust, fill = NA, aes(lty = "Survey cluster")) +
+  geom_sf(data = clinics, aes(pch = "TB clinic")) +
+  scale_fill_viridis_c(trans = "sqrt", option = "magma", direction = -1, begin = 0.2) +
+  scale_shape_manual(values = 15) +
+  labs(x = "", y = "", 
+       fill = expression("Population\nper 100m"^2),
+       lty = "", pch = "") +
+  annotation_scale(location = "br")
+ggsave(here::here(figdir,"study_region.png"), 
+       height = 5, width = 6)
 
 # ---------------------------------------------------------------------------- #
 # Household composition
@@ -109,7 +126,7 @@ dat %>%
 ggsave(here::here(figdir, "sample_age_sex_pyramid.png"), height = 5, width = 6)
 
 # ---------------------------------------------------------------------------- #
-# Overall totals 
+# Overall totals - including missing data
 
 dat %>% 
   mutate(sputum = (s50tb_medtest == 1),
@@ -127,24 +144,63 @@ n_distinct(dat$hh_id) # 2278
 dat %>% 
   group_by(last_test_12m) %>% 
   count()
-# last_test_12m     n
-# 1 No             2587
-# 2 Yes             151
+#   last_test_12m     n
+# 1 No             2627
+# 2 Yes             111
 
 mean(dat$s50tb_medtest == 1) #0.1004383
 mean(dat$s53tb_evrxray == 1) #0.09934259
 mean(dat$s50tb_medtest == 1 & dat$s53tb_evrxray == 1) #0.04163623
 
 # ---------------------------------------------------------------------------- #
+# Overall totals - excluding missing data
+
+dat_nona <- dat %>% 
+  filter(!is.na(s09age) & hiv_combined != "HIV unknown" & !is.na(pov_score))
+
+sum(dat_nona$ever_test == "Yes")
+# 414
+sum(dat_nona$s50tb_medtest == 1)
+# 257
+sum(dat_nona$s53tb_evrxray == 1)
+# 262
+
+dat_nona %>% 
+  mutate(sputum = (s50tb_medtest == 1),
+         xray = (s53tb_evrxray == 1)) %>% 
+  group_by(sputum, xray) %>% 
+  count() 
+#   sputum xray      n
+# 1 FALSE  FALSE  2176
+# 2 FALSE  TRUE    157
+# 3 TRUE   FALSE   152
+# 4 TRUE   TRUE    105
+
+n_distinct(dat_nona$hh_id) # 2167
+
+dat_nona %>% 
+  group_by(last_test_12m) %>% 
+  count()
+#   last_test_12m     n
+# 1 No             2484
+# 2 Yes             106
+
+mean(dat_nona$s50tb_medtest == 1) #0.099
+mean(dat_nona$s53tb_evrxray == 1) #0.101
+mean(dat_nona$s50tb_medtest == 1 & dat_nona$s53tb_evrxray == 1) #0.0405
+
+# ---------------------------------------------------------------------------- #
 # Last test dates
 
-dat %>% 
+dat_nona %>% 
   filter(ever_test == "Yes") %>% 
   mutate(time_since_test = time_length(difftime(today, last_test), "years")) -> tested 
   
 summary(tested$last_test)
-# Min.      1st Qu.       Median         Mean      3rd Qu.         Max.         NA's 
-# "1995-05-01" "2015-04-16" "2018-06-01" "2016-06-11" "2019-06-01" "2019-12-01"         "91" 
+#         Min.      1st Qu.       Median         Mean      3rd Qu.         Max.         NA's 
+# "1995-05-01" "2018-01-01" "2019-03-01" "2017-07-07" "2019-09-01" "2019-12-01"        "248" 
+
+mean(is.na(tested$last_test))
 
 ggplot(tested, aes(last_test)) +
   geom_histogram() +
@@ -158,6 +214,8 @@ tested %>%
   geom_col()
 
 summary(tested$last_test > as.Date("01/01/2016"))
+#    Mode    TRUE    NA's 
+# logical     166     248 
 
 tested %>% 
   pivot_longer(c("last_sputum","last_xray")) %>% 
@@ -170,12 +228,12 @@ tested %>%
             time_since_test = median(time_since_test, na.rm = T))
 
 #   name        min        median     max         diff time_since_test
-# 1 last_sputum 1995-05-01 2018-01-01 2019-12-01  24.6           1.94 
-# 2 last_xray   2000-06-01 2018-11-01 2019-12-01  19.5           0.961
+# 1 last_sputum 1995-05-01 2019-01-01 2019-12-01  24.6           0.813
+# 2 last_xray   2003-12-01 2019-04-01 2019-12-01  16             0.537
 
 summary(tested$time_since_test)
 #     Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
-# -0.04107  0.40931  1.33881  3.40368  4.73922 24.13415       91 
+# -0.04107  0.20329  0.57906  2.31121  1.94456 24.13415      248 
 
 # ---------------------------------------------------------------------------- #
 # Summarise by individual characteristics
@@ -235,6 +293,7 @@ tab1 <- tab1a %>%
   full_join(tab1b)
 write.csv(tab1, here::here("output", "tab1.csv"), row.names = FALSE)
 
+#------------------------------------------------------------------------------#
 # Unknown HIV status
 
 dat$hivmiss <- factor(dat$hiv_combined == "HIV unknown", levels = c(FALSE,TRUE), labels = c("No","Yes"))
@@ -263,7 +322,7 @@ dat %>%
   geom_boxplot() +
   labs(x = "Unknown HIV status", y = "Wealth step") -> bystep
 
-hivmiss_byage + hivmiss_bypmt + hivmiss_bystep
+byage + bypmt + bystep
 ggsave(here::here(figdir,"missing_hiv_by_age_pov.png"), height = 5, width = 15)
 
 plot_bars_byperc(dat, "wealth_quant","hivmiss") +
@@ -305,7 +364,8 @@ ggsave(here::here(figdir,"perc_hivmissing_byclust.png"),
        height = 5, width = 15)
 
 
-plot_byarea(hivmiss_byclust, clust, "p_hivmiss", lab = "% HIV\nunknown") -> byclust
+plot_byarea(hivmiss_byclust, clust, "p_hivmiss", lab = "% HIV\nunknown") +
+  labs(caption = "") -> byclust
 
 dat %>% 
   group_by(clinic_id) %>% 
@@ -376,7 +436,8 @@ ggsave(here::here(figdir,"perc_povmissing_byclust.png"),
        height = 5, width = 15)
 
 
-plot_byarea(povmiss_byclust, clust, "p_povmiss", lab = "% missing") -> byclust
+plot_byarea(povmiss_byclust, clust, "p_povmiss", lab = "% missing") +
+  labs(caption = "") -> byclust
 
 dat %>% 
   group_by(clinic_id) %>% 
@@ -421,12 +482,13 @@ dat %>%
 
 # Overall mean + CI:
 overall <- 100*round(Hmisc::binconf(x = sum(dat$ever_test == "Yes"), n = nrow(dat)),2)
+overall
 # PointEst Lower Upper
 #       16    14    17
 
 100*round(Hmisc::binconf(x = sum(dat$last_test_12m == "Yes"), n = nrow(dat)),2)
 # PointEst Lower Upper
-# 6     5     6
+#        4     3     5
 
 # Plot cluster summary
 
@@ -457,9 +519,11 @@ ggsave(here::here(figdir,"box_test_prev_byclust.png"),
 # Map out clusters
 
 plot_byarea(by_clust, clust, varname = "perc_test_history", lab = "%") +
-  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  # geom_sf(data = clinics, aes(pch = "TB Clinic")) +
   scale_shape_manual(values = 15) +
-  scale_fill_viridis_c(option = "inferno", direction = -1) +
+  # scale_fill_viridis_c(option = "inferno", direction = -1) +
+  scale_fill_gradient2(midpoint = mean(by_clust$perc_test_history), low = "red", high = "blue") +
+  theme(axis.text = element_blank(), axis.ticks = element_blank()) +
   labs(x = "", y = "", 
        fill = "%",
        lty = "", pch = "", 
@@ -510,6 +574,41 @@ plot_byarea(by_clinic_long, clinicarea, varname = "value", lab = "%") +
        subtitle = "% respondents reporting previous test or chest x-ray, by clinic") +
   facet_wrap(~name)
 ggsave(here::here(figdir,"test_history_byclinic_type.png"), height = 5, width = 10)
+
+#------------------------------------------------------------------------------#
+# Spatial autocorrelation by cluster
+
+# Specify cluster neighbour structure/weights
+nb <- poly2nb(clust, snap = 0.001)
+
+# Cluster 31 has no neighbours - impute as 27 for completeness
+nb[[31]] = as.integer(27,28)
+
+lw <- nb2listw(nb, style="B", zero.policy=TRUE)
+M <- nb2mat(nb, style = "B", zero.policy = TRUE)
+
+# Cluster % tested
+MC <- moran.mc(by_clust$perc_test_history, lw, nsim=999)
+MC
+# statistic = -0.11292, observed rank = 118, p-value = 0.882
+
+plot(MC, main="", las=1, xlab = "Cluster % ever tested")
+
+# By test type
+MC_sp <- moran.mc(by_clust$perc_sputum, lw, nsim=999)
+MC_sp
+# statistic = -0.16568, observed rank = 49, p-value = 0.951
+
+
+MC_xr <- moran.mc(by_clust$perc_xray, lw, nsim=999)
+MC_xr
+# statistic = 0.081059, observed rank = 844, p-value = 0.156
+
+png(here::here(figdir, "moran_testtype_byclust.png"), height = 400, width = 800)
+par(mfrow = c(1,2))
+plot(MC_sp, main="", las=1, xlab = "Cluster % sputum")
+plot(MC_xr, main="", las=1, xlab = "Cluster % chest x-ray")
+dev.off()
 
 # ---------------------------------------------------------------------------- #
 # Map by clinic
