@@ -104,16 +104,51 @@ mutate(sex = case_when(s07sex==1 ~ "Male",
                                d12sumres==4 ~ "New positive",
                                d12sumres==5 ~ "Not done",
                                TRUE ~ NA_character_),
-         d12sumres = fct_relevel(d12sumres, "Previous positive not on ART", "Previous positive on ART", "New negative", "New positive", "Not done")) %>%
-    mutate(agegp = case_when(between(s09age,18,24) ~ "18-24",
-                           between(s09age,25,34) ~ "25-34",
-                           between(s09age,35,44) ~ "35-44",
-                           between(s09age,45,54) ~ "45-54",
-                           between(s09age,55,64) ~ "55-64",
-                           s09age > 64 ~ "65+" ),
+         d12sumres = fct_relevel(d12sumres, "Previous positive not on ART", "Previous positive on ART", "New negative", "New positive", "Not done"))
+```
+### Missing age
+
+Where age is missing, infer from given DOB
+
+```{r imp_age}
+
+agemiss <- which(is.na(screening$s09age))
+length(agemiss)
+
+apply(dplyr::select(screening, s08dobday:s08dobyr), 2, summary)
+
+screening[,c("s08dobday","s08dobmon","s08dobyr")] <- screening %>% 
+  dplyr::select(s08dobday:s08dobyr) %>% 
+  purrr::map2(c(88,77,888), function(x, y) na_if(x, y)) 
+
+screening <- screening %>% 
+  # If day of birth unknown but month/year known, impute with 1st of month
+  # If month of birth unknown but year known, impute with June
+  mutate(s08dobday = case_when((is.na(s08dobday) & !is.na(s08dobyr)) ~ 1,
+                               T ~ s08dobday),
+         s08dobmon = case_when((is.na(s08dobmon) & !is.na(s08dobyr)) ~ 6,
+                               T ~ s08dobmon),
+         dob_ = paste(s08dobday, s08dobmon, s08dobyr, sep = "."),
+         dob = dmy(dob_),
+         age=case_when(
+           is.na(s09age) ~ floor(as.numeric(interval(start = dob, end = data_date) / 
+                                              duration(num = 1, units = "years"))),
+           T ~ s09age))
+
+summary(screening$age)
+
+# Define 10 year age bands
+screening <- screening %>%
+    mutate(agegp = case_when(between(age,18,24) ~ "18-24",
+                           between(age,25,34) ~ "25-34",
+                           between(age,35,44) ~ "35-44",
+                           between(age,45,54) ~ "45-54",
+                           between(age,55,64) ~ "55-64",
+                           age > 64 ~ "65+" ),
           agegp = factor(agegp,levels = c("18-24","25-34","35-44",
                                           "45-54","55-64","65+")))
 
+summary(screening$agegp)
 ```
 
 ## 5 Aggregating HIV information
@@ -487,29 +522,6 @@ saveRDS(survey, file.path(datadir, "survey_clean.rds"))
 
 # Individual data
 dat <- survey %>% 
-  dplyr::select(today, ind_id, s02cl_id, clinic_id, close_clin,
-                # Household data
-                hh_id, gps_lat, gps_lng, gps_alt, gps_acc, hh_per_room, pov_score, h22hh_step, 
-                # Individual data
-                s07sex, sex, s09age, agegp, hiv, hiv_combined,
-                # Current TB 
-                any_cough, any_tb_symp,
-                # Known TB
-                s60tb_anyone, s62tb_famtb, s65tb_died,
-                
-                ## EXTENDED ONLY ##
-                
-                # Ever TB test/diagnosis
-                # Raw variables
-                s50tb_medtest, s53tb_evrxray,
-                # Generated variables
-                ever_test, last_sputum, last_xray, last_test, last_test_12m,
-                # s50tb_medtest, s51tb_spnum, s53tb_evrxray, s54tb_xraynum, s56tb_evrtst, 
-                # self-assessed sick, current trt
-                s30tb_sick, s57tb_treat,
-                # Service usage
-                s111serv_hosp, s111serv_hosp_period,
-                ) %>%
   mutate(any_tb_symp = as.factor(any_tb_symp),
          current_trt = factor((s57tb_treat == 1), 
                               levels = c(FALSE,TRUE), 
