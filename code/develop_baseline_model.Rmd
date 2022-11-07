@@ -59,7 +59,7 @@ clust_clinic <- bind_cols(clust_clinic, clust_cent)
 
 ggmap(blt_lines, 
       base_layer = ggplot(clust_clinic)) +
-  geom_sf(aes(col = type, lty = type), fill = NA, lwd = 1) +
+  geom_sf(aes(col = type), fill = NA, lwd = 1) +
   geom_text(aes(label = clustid, x = X, y = Y)) +
   labs(x = "", y = "", col = "")
 # ggsave(here::here("figures","cluster_clinic_map.png"), height = 6, width = 6)
@@ -71,8 +71,6 @@ ggmap(blt_lines,
 Primary analysis will be complete case, with multiple imputation as supplementary to check for robustness.
 
 ```{r missdata}
-
-# Summarise missing data
 
 dat %>% 
   dplyr::select(ever_test, s09age, sex, hiv_combined, pov_score, wealth_step) %>% 
@@ -87,20 +85,23 @@ dat_nona <- dat %>%
 
 ```
 
-## Make analysis dataset
+## Make primary analysis dataset
 
-```{r make_data}
+```{r summ_data}
 
 cluster_inc <- prev_clust %>% 
   st_drop_geometry() %>% 
   dplyr::select(cluster_number, clust_inc_1518)
 
+# Redefine HIV status
 dat_nona$hiv <- dat_nona$hiv_combined
 dat_nona$hiv[dat_nona$hiv == "HIV positive ART"] <- "HIV positive"
 
 dat_nona <- mutate(dat_nona, 
               test01 = as.numeric(ever_test == "Yes"),
-              agegp = factor(cut(s09age, breaks = c(17,24,34,44,54,max(dat$s09age, na.rm=T)))),
+              agegp = factor(cut(s09age, 
+                                 breaks = c(17,24,34,44,54,120)),
+                        levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]")),
               hiv = factor(hiv, levels = c("HIV negative","HIV positive"), labels = c("HIV negative","HIV positive")),
               pov_score_scale = -scale(pov_score),
               wealth_quant = as.factor(ntile(pov_score_scale, 6)),
@@ -115,7 +116,8 @@ dat_nona <- mutate(dat_nona,
 
 # Check
 dat_nona %>% 
-  dplyr::select(test01, sex, agegp, hiv, pov_score, pov_score_scale, pov01, wealth_quant, wealth_step, wealth_step1, clust_inc_1518, clinic_id) %>% 
+  dplyr::select(test01, sex, agegp, hiv, pov_score, pov_score_scale, pov01, 
+                wealth_quant, wealth_step, wealth_step1, clust_inc_1518, clinic_id) %>% 
   summary()
 
 ```
@@ -148,7 +150,8 @@ fit0 <- brm(test01 ~ 1,
 summary(fit0)
 
 # Prior predictive check
-pp_check(fit0)
+pp_check(fit0, ndraws = 100)
+ggsave(here::here(figdir, "pp_check.png"), height = 4, width = 5)
 
 # Posterior predictive checks
 y <- dat_nona$test01
@@ -197,7 +200,7 @@ summary(fit1)
 pairs(fit1)
 
 # Prior predictive check
-pp_check(fit1, yrep = 100) 
+pp_check(fit1, ndraws = 100) 
 
 # Posterior predictive checks
 y <- dat_nona$test01
@@ -237,16 +240,16 @@ pp_check(fit1a)
 
 # Posterior predictive checks
 y <- dat_nona$test01
-yrep <- posterior_predict(fit1a, draws = 20)
+yrep <- posterior_predict(fit1a, draws = 100)
 
 # Individual residuals
 dat_nona %>%
-  add_residual_draws(fit1a, ndraws = 20) %>%
+  add_residual_draws(fit1a, ndraws = 100) %>%
   ggplot(aes(x = .row, y = .residual)) +
   stat_pointinterval()
 
 dat_nona %>%
-  add_predicted_draws(fit1a, ndraws = 20) %>%
+  add_predicted_draws(fit1a, ndraws = 100) %>%
   make_probability_residuals(.prediction, test01, n = 1) %>%
   ggplot(aes(sample = .p_residual)) +
   geom_qq(distribution = qunif) +
@@ -285,16 +288,16 @@ pairs(fit2)
 
 # Posterior predictive checks
 y <- dat_nona$test01
-yrep <- posterior_predict(fit2, draws = 20)
+yrep <- posterior_predict(fit2, draws = 100)
 
 # Individual residuals
 dat_nona %>%
-  add_residual_draws(fit2, ndraws = 20) %>%
+  add_residual_draws(fit2, ndraws = 100) %>%
   ggplot(aes(x = .row, y = .residual)) +
   stat_pointinterval()
 
 dat_nona %>%
-  add_predicted_draws(fit2, ndraws = 20) %>%
+  add_predicted_draws(fit2, ndraws = 100) %>%
   make_probability_residuals(.prediction, test01) %>%
   ggplot(aes(sample = .p_residual)) +
   geom_qq(distribution = qunif) +
@@ -329,23 +332,23 @@ pp_check(fit2a, type = "stat",stat = "mean", ndraws = 500)
 
 # Posterior predictive checks
 y <- dat_nona$test01
-yrep <- posterior_predict(fit2a, draws = 20)
+yrep <- posterior_predict(fit2a, draws = 100)
 
 # Individual residuals
 dat_nona %>%
-  add_residual_draws(fit2a, ndraws = 20) %>%
+  add_residual_draws(fit2a, ndraws = 100) %>%
   ggplot(aes(x = .row, y = .residual)) +
   stat_pointinterval()
 
 dat_nona %>%
-  add_predicted_draws(fit2a, ndraws = 20) %>%
+  add_predicted_draws(fit2a, ndraws = 100) %>%
   make_probability_residuals(.prediction, test01) %>%
   ggplot(aes(sample = .p_residual)) +
   geom_qq(distribution = qunif) +
   geom_abline()
 
 # Leave-one-out cross-validation
-loo1a <- LOO(fit2a, save_psis = TRUE)
+loo2a <- LOO(fit2a, save_psis = TRUE)
 plot(loo2a)
 
 # Conditional effects
@@ -363,11 +366,14 @@ plot_model(fit2a,
            order.terms = c(1,2,3,4,5,7,8,9,10,6),
            transform = NULL, 
            title = "",
-           axis.labels = rev(c("Male","Age (24,34]", "Age (34,44]", "Age (44,54]", "Age (54,87]",
-                           "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age (54,87]",
+           axis.labels = rev(c("Male","Age (24,34]", "Age (34,44]", "Age (44,54]", "Age > 55",
+                           "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age > 55",
                            "HIV positive"))
            ) + 
-  geom_hline(yintercept = 0, lty = "dashed", col = "grey")
+  # geom_hline(yintercept = 0, lty = "dashed", col = "grey") +
+  scale_y_continuous(limits = c(-1,2)) -> plot_base_coeffs
+
+plot_base_coeffs
 ggsave(here::here(figdir,"fixeff_baseline.png"), height = 6, width = 6)
 
 ```
@@ -411,7 +417,6 @@ ggsave(here::here(figdir, "cluster_exp_baseline.png"), height = 5, width = 6)
 
 ```
 
-
 ## Plot baseline model cluster IID effects
 
 ```{r plot_iid}
@@ -426,8 +431,13 @@ fitted_iid
 plot_byarea(fitted_iid, clust, varname = "mean", lab = "Posterior mean", midpoint = 0) +
   labs(title = "Cluster level residuals ",
        subtitle = "Adjusted for age group, sex and HIV status",
-       caption = "")
+       caption = "") -> map_clustiid
+map_clustiid
 ggsave(here::here(figdir, "cluster_iid_baseline.png"), height = 5, width = 6)
+
+# Combine plots for paper
+plot_base_coeffs + map_clustiid
+ggsave(here::here(figdir, "plots_baseline.png"), height = 5, width = 12)
 
 ```
 
@@ -445,7 +455,7 @@ summary(fit2b)
 
 ## Also adjust for previous incidence
 
-```{r add_tb_contact}
+```{r add_previnc}
 
 fit2c <- brm(test01 ~ sex*agegp + hiv + clust_inc_1518 + (1 | clustid), 
                  data = dat_nona,

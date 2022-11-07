@@ -42,11 +42,16 @@ ggmap(blt_lines,
   scale_fill_viridis_c(trans = "sqrt", option = "magma", direction = -1, begin = 0.2) +
   scale_shape_manual(values = 15) +
   labs(x = "", y = "", 
-       fill = expression("Population\nper 100m"^2),
+       caption = NULL,
+       fill = expression(Population~per~"100m"^2),
        lty = "", pch = "") +
-  annotation_scale(location = "br")
+  annotation_scale(location = "br") +
+  annotation_north_arrow(location = "bl",
+                         style = north_arrow_minimal(),
+                         height = unit(0.8, "cm"), width = unit(0.8, "cm")) +
+  theme(axis.text = element_blank()) 
 ggsave(here::here(figdir,"study_region.png"), 
-       height = 5, width = 6)
+       height = 5, width = 7, dpi = 350)
 
 # ---------------------------------------------------------------------------- #
 # Household composition
@@ -511,8 +516,10 @@ dat_clust_long <- by_clust %>%
 dat_clust_long %>% 
   ggplot(aes(x = name, y = value)) +
   geom_boxplot() + 
-  labs(x = "",y = "Cluster percentage")
+  labs(x = "",y = "Cluster percentage") -> boxplot_testtype
+boxplot_testtype
 ggsave(here::here(figdir,"box_test_prev_byclust.png"), 
+       boxplot_testtype,
        height = 5, width = 5)
 
 # ---------------------------------------------------------------------------- #
@@ -527,10 +534,17 @@ plot_byarea(by_clust, clust, varname = "perc_test_history", lab = "%") +
   labs(x = "", y = "", 
        fill = "%",
        lty = "", pch = "", 
-       subtitle = "% respondents reporting previous test or x-ray by cluster") 
+       subtitle = "% respondents reporting previous test or x-ray by cluster") -> test_byclust
 
+test_byclust
 ggsave(here::here(figdir,"test_history_byclust.png"), 
+       test_byclust,
        height = 5, width = 6)
+
+test_byclust + boxplot_testtype + plot_annotation(tag_levels = "A") +
+  plot_layout(widths = c(1,1.5))
+ggsave(here::here(figdir,"fig2.png"), 
+       height = 5, width = 12)
 
 by_clust %>% 
   pivot_longer(perc_sputum:perc_xray) %>% 
@@ -802,6 +816,35 @@ pov_by_clust_long %>%
 
 ggsave(here::here(figdir,"box_poverty_byclust.png"), 
        height = 5, width = 5)
+
+pov_by_clust_long %>% 
+  filter(name != "PMT score: 1st quantile") %>% 
+  plot_byarea(areas = clust, varname = "value", lab = "%") +
+  facet_wrap(~name) +
+  scale_fill_viridis_c(option = "inferno", direction = -1) +
+  labs(caption = NULL)
+
+ggsave(here::here(figdir,"map_poverty_byclust.png"), 
+       height = 4, width = 8, dpi = 350)
+
+
+# Plot  scores against each other
+dat %>% 
+  filter(!is.na(pov_score)) %>% 
+  ggplot(aes(as.factor(wealth_step), pov_score)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_boxplot() +
+  labs(x = "Self-assessed wealth", y= "PMT poverty score") -> score_by_step
+
+pov_by_clust %>% 
+  ggplot(aes(pmt, step)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  labs(y = "Cluster mean self-assessed wealth", x = "Cluster mean PMT score") -> clust_score_by_step
+
+score_by_step + clust_score_by_step + plot_annotation(tag_levels = "A") 
+ggsave(here::here(figdir,"fig3.png"), 
+       height = 5, width = 12, dpi = 350)
 
 #------------------------------------------------------------------------------#
 # Spatial autocorrelation in poverty measures
