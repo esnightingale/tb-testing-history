@@ -11,6 +11,12 @@ datadir <- "C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/Modelling
 # Source utility functions
 list.files(here::here("code","utils"), full.names = TRUE) %>% purrr::walk(source)
 
+# Fix for dbplyr error when loading tidyverse
+# devtools::install_github("RobinHankin/Brobdingnag")
+
+# Download repo from github if not already present
+# devtools::install_github("petermacp/BlantyreTBEpi")
+
 #-----------#
 # Geography #
 
@@ -62,7 +68,6 @@ popBLT_df <- as.data.frame(popBLT_spdf)
 data("cnrs", package="BlantyreTBEpi")    # Case notifications per HSA
 cnrs <- st_transform(cnrs, st_crs(4326))
 
-
 data("cluster_cases_sf", package="BlantyreTBEpi")    # Case notifications per HSA
 tb_hsa <- hsas %>% 
   full_join(cluster_cases_sf)
@@ -81,10 +86,40 @@ prev_clust <- readRDS(here::here("data","dat_scale.rds")) %>%
   mutate(clust_inc_1518 = 1000*mean(c_across(starts_with("inc_"))))
 
 # Individual data
-dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data/analysis_data.rds") %>% 
-  mutate(agegp2 = factor(cut(s09age, breaks = c(17,24,34,44,54,max(s09age, na.rm=T)))),
+dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data/analysis_data.rds")%>% 
+  dplyr::select(today, ind_id, h02cl_id, clinic_id, close_clin,
+                # Household data
+                hh_id, gps_lat, gps_lng, gps_alt, gps_acc, hh_per_room, pov_score, wealth_step, 
+                # Individual data
+                s07sex, sex, s09age, agegp, hiv, hiv_combined, hiv_art,
+                # Current TB 
+                any_cough, any_tb_symp,
+                # Known TB
+                s60tb_anyone, s62tb_famtb, s65tb_died,
+                
+                ## EXTENDED ONLY ##
+                
+                # Ever TB test/diagnosis
+                # Raw variables
+                s50tb_medtest, s53tb_evrxray,
+                # Generated variables
+                ever_test, last_sputum, last_xray, last_test, last_test_12m,
+                # s50tb_medtest, s51tb_spnum, s53tb_evrxray, s54tb_xraynum, s56tb_evrtst, 
+                # self-assessed sick, current trt
+                s30tb_sick, s57tb_treat,
+                # Service usage
+                s111serv_hosp, s111serv_hosp_period,
+  ) %>%
+  rename(clustid = h02cl_id) %>% 
+  mutate(agegp2 = factor(cut(s09age, breaks = c(17,24,34,44,54,120)),
+                         levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]"),
+                         labels = c("(17,24]","(24,34]","(34,44]","(44,54]","> 55")),
          pov_score_scale = -scale(pov_score),
-         wealth_quant = as.factor(ntile(pov_score_scale, 6)))
+         pov01 = (pov_score > 0), 
+         wealth_quant = as.factor(ntile(pov_score_scale, 6)),
+         wealth_step1 = (wealth_step == 1),
+         test01 = as.numeric(ever_test),
+         incl_extended = !is.na(ever_test))
 
 dat <- dat_all %>% 
   filter(incl_extended)
