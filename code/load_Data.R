@@ -111,9 +111,9 @@ dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/M
                 s111serv_hosp, s111serv_hosp_period,
   ) %>%
   rename(clustid = h02cl_id) %>% 
-  mutate(agegp2 = factor(cut(s09age, breaks = c(17,24,34,44,54,120)),
+  mutate(agegp = factor(cut(s09age, breaks = c(17,24,34,44,54,120)),
                          levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]"),
-                         labels = c("(17,24]","(24,34]","(34,44]","(44,54]","> 55")),
+                         labels = c("(17,24]","(24,34]","(34,44]","(44,54]","55+")),
          pov_score_scale = -scale(pov_score),
          pov01 = (pov_score > 0), 
          wealth_quant = as.factor(ntile(pov_score_scale, 6)),

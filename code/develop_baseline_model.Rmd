@@ -99,9 +99,9 @@ dat_nona$hiv[dat_nona$hiv == "HIV positive ART"] <- "HIV positive"
 
 dat_nona <- mutate(dat_nona, 
               test01 = as.numeric(ever_test == "Yes"),
-              agegp = factor(cut(s09age, 
-                                 breaks = c(17,24,34,44,54,120)),
-                        levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]")),
+              # agegp = factor(cut(s09age, 
+              #                    breaks = c(17,24,34,44,54,120)),
+              #           levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]")),
               hiv = factor(hiv, levels = c("HIV negative","HIV positive"), labels = c("HIV negative","HIV positive")),
               pov_score_scale = -scale(pov_score),
               wealth_quant = as.factor(ntile(pov_score_scale, 6)),
@@ -326,22 +326,28 @@ fit2a <- brm(test01 ~ sex*agegp + hiv + (1 | clustid),
 summary(fit2a)
 
 # Prior predictive check
-pp_check(fit2a)
-pp_check(fit2a, type = "stat",stat = "mean", ndraws = 500)
+pp_check(fit2a, ndraws = 200)
+pp_check(fit2a, type = "stat",stat = "mean", ndraws = 200)
 # ggsave(here::here(figdir,"ppc_tstat_baseline.png"), height = 5, width = 5)
 
 # Posterior predictive checks
 y <- dat_nona$test01
-yrep <- posterior_predict(fit2a, draws = 100)
+yrep <- posterior_predict(fit2a, draws = 200)
+
+yrep %>% 
+  reshape2::melt() %>% 
+  ggplot(aes(value, group = Var1)) +
+  geom_density(col = "lightblue", alpha = 0.5) +
+  geom_density(data = y)
 
 # Individual residuals
 dat_nona %>%
-  add_residual_draws(fit2a, ndraws = 100) %>%
+  add_residual_draws(fit2a, ndraws = 200) %>%
   ggplot(aes(x = .row, y = .residual)) +
   stat_pointinterval()
 
 dat_nona %>%
-  add_predicted_draws(fit2a, ndraws = 100) %>%
+  add_predicted_draws(fit2a, ndraws = 200) %>%
   make_probability_residuals(.prediction, test01) %>%
   ggplot(aes(sample = .p_residual)) +
   geom_qq(distribution = qunif) +
@@ -353,9 +359,14 @@ plot(loo2a)
 
 # Conditional effects
 # pdf(here::here(figdir, "condeff_base1.pdf"), height = 5, width = 6)  
-plot(conditional_effects(fit2a), ask = F)
+condeffs.plot.list <- plot(conditional_effects(fit2a, ndraws = 200), ask = F)
+condeffs.plot.list
 # dev.off()
 
+condeffs.plot.list$`sex:agegp` + 
+  guides(fill = FALSE) +
+  labs(x = NULL, y = "Proportion ever tested", col = "Age group")
+ggsave(here::here(figdir,"condeffs_agesex_baseline.png"), height = 5, width = 7)
 ```
 
 ### Plot baseline model coefficients
@@ -432,12 +443,15 @@ plot_byarea(fitted_iid, clust, varname = "mean", lab = "Posterior mean", midpoin
   labs(title = "Cluster level residuals ",
        subtitle = "Adjusted for age group, sex and HIV status",
        caption = "") -> map_clustiid
-map_clustiid
-ggsave(here::here(figdir, "cluster_iid_baseline.png"), height = 5, width = 6)
+plot_byarea(fitted_iid, clust, varname = "sd", lab = "Posterior SD") +
+  scale_fill_gradient(low = "white", high = "blue") + 
+  labs(caption = "") -> map_clustiid_sd
+map_clustiid / map_clustiid_sd
+ggsave(here::here(figdir, "cluster_iid_baseline.png"), height = 10, width = 6)
 
 # Combine plots for paper
-plot_base_coeffs + map_clustiid
-ggsave(here::here(figdir, "plots_baseline.png"), height = 5, width = 12)
+plot_base_coeffs + (map_clustiid / map_clustiid_sd) + plot_annotation(tag_levels = "A")
+ggsave(here::here(figdir, "plots_baseline.png"), height = 8, width = 12)
 
 ```
 

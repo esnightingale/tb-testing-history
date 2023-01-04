@@ -16,51 +16,36 @@ figdir <- "figures/descriptive"
 ```
 
 Aim: to understand how participants of the extended survey are representative of:
-+ particupants of the primary survey
++ participants of the primary survey
 + residents in surveyed households (household survey)
 + residents of survey clusters overall (worldpop)
 
 ```{r load_data}
 
+# Raw survey data
 datadir <- "C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data"
-
 ind <- readRDS(file.path(datadir, "individual_clean.rds"))
 hh <- readRDS(file.path(datadir, "household_clean.rds"))
 
+# Analysis data
+source(here::here("code/load_data.R"), echo=TRUE)
+dat_nona <- readRDS(here::here("data","analysis_data_primary.rds"))
+
 clust <- readRDS(here::here("data","dat_scale.rds")) %>% 
   sf::st_drop_geometry() 
+
+# Unadjusted fits
+fit_base <- readRDS(here::here("output","fit_base.rds"))
+fit_list_pov <- readRDS(here::here("output","fit_list_pov.rds"))
+
+priors <- c(prior(normal(-2, 2), class = Intercept),
+            prior(normal(0,10), class = b),
+            prior(cauchy(0,1), class = sd, group = "clustid"))
 
 ```
 
 # Summarise each sample by age and sex
 
-## Individual survey
-
-Calculate totals by age and sex for primary and extended survey samples
-
-```{r ind_survey}
-
-# Primary
-ind %>% 
-  group_by(sex, agegp) %>% 
-  count() %>% 
-  # Calculate distribution across age groups for male/female
-  # group_by(sex) %>% 
-  # mutate(p = n/n()) %>% 
-  ungroup() %>%
-  mutate(survey = "Primary") -> ind_dist
-ind_dist
-
-# Extended
-ind %>% 
-  filter(!is.na(s50tb_medtest)) %>% 
-  group_by(sex, agegp) %>% 
-  count() %>% 
-  ungroup() %>% 
-  mutate(survey = "Extended") -> ext_dist
-ext_dist
-
-```
 ## Household survey
 
 Reported population across sampled households.
@@ -107,14 +92,9 @@ hh_long <- hh_long %>%
   filter(!is.na(sex)) %>%
   mutate(sex = factor(sex, levels = 1:2, labels = c("Male","Female")),
          hh_tot_match = (h07hh_number == hh_tot),
-         agegp = case_when(between(age,18,24) ~ "18-24",
-                           between(age,25,34) ~ "25-34",
-                           between(age,35,44) ~ "35-44",
-                           between(age,45,54) ~ "45-54",
-                           between(age,55,64) ~ "55-64",
-                           age > 64 ~ "65+" ),
-          agegp = factor(agegp,levels = c("18-24","25-34","35-44",
-                                          "45-54","55-64","65+"))) 
+         agegp = factor(cut(age, 
+                            breaks = c(17,24,34,44,54,120)),
+                        levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]"))) 
   
 hh_dist <- hh_long %>% 
   # exclude minors
@@ -123,6 +103,48 @@ hh_dist <- hh_long %>%
   count() %>% 
   ungroup() %>% 
   mutate(survey = "Household")
+
+```
+
+## Individual survey
+
+Calculate totals by age and sex for primary and extended survey samples
+
+```{r ind_survey}
+
+# First redefine age groups
+ind <- mutate(ind,
+              agegp = factor(cut(s09age, 
+                                 breaks = c(17,24,34,44,54,120)),
+                        levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]")))
+
+# Primary
+ind %>% 
+  group_by(sex, agegp) %>% 
+  count() %>% 
+  # Calculate distribution across age groups for male/female
+  # group_by(sex) %>% 
+  # mutate(p = n/n()) %>% 
+  ungroup() %>%
+  mutate(survey = "Primary") -> ind_dist
+ind_dist
+
+# Extended
+ind %>% 
+  filter(!is.na(s50tb_medtest)) %>% 
+  group_by(sex, agegp) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(survey = "Extended") -> ext_dist
+ext_dist
+
+```
+Summarise HIV distribution in individual survey
+
+```{r ind_dist_hiv}
+
+ind %>% 
+  
 
 ```
 
@@ -273,22 +295,32 @@ compare %>%
 
 ```
 
-Again, don't look hugely dissimilar. 
+# Post-stratification
 
+Relative to the household survey population, by age group and sex.
 
+Refit primary model to be multilevel, with random intercepts on each of the post-strat characteristics.
 
-```{r byage}
+```{r refit_mlm}
 
-compare %>%
-  filter(survey != "Primary") %>% 
-  group_by(survey, agegp) %>% 
-  summarise(n = sum(n)) %>% 
-  group_by(survey) %>% 
-  mutate(p = n/sum(n)) %>%
-  mutate(p = ifelse(survey == "Household", p*(-1), p*1)) %>%
-  ggplot(aes(x = agegp, y = p, fill = survey)) + 
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(fill = "", y = "Proportion", x = "Age group") 
+fit_base_ml <- brm(test01 ~ factor(sex) + factor(sex)*factor(agegp) + 
+                     (1 | agegp) + (1 | hiv) + (1 | clustid), 
+                   data = dat_nona,
+                   prior = priors,
+                   family = "bernoulli")
 
 ```
+
+```{r ps}
+
+hh_dist %>% 
+  mutate(prop = n/sum(n),
+         freq = 72) %>% 
+  tidyr::uncount(freq) %>% 
+  mutate(clustid = rep(1:72, 10)) -> ps_data
+
+ps_epred <- posterior_epred(fit_base, newdata = ps_data)
+
+```
+
+
