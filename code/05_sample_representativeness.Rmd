@@ -1,0 +1,330 @@
+---
+title: "Representativeness of extended survey"
+output: html_notebook
+---
+
+```{r setup}
+library(tidyverse)
+library(Hmisc)
+
+theme_set(theme_minimal())
+
+# Fix default ggsave background
+ggsave <- function(..., bg = 'white') ggplot2::ggsave(..., bg = bg)
+
+figdir <- "figures/manuscript/supplementary"
+```
+
+Aim: to understand how participants of the extended survey are representative of:
++ participants of the primary survey
++ residents in surveyed households (household survey)
++ residents of survey clusters overall (worldpop)
+
+```{r load_data}
+
+# Raw survey data
+datadir <- "C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/ModellingData/Pre_PS_Data"
+ind <- readRDS(file.path(datadir, "individual_clean.rds"))
+hh <- readRDS(file.path(datadir, "household_clean.rds"))
+
+# Analysis data
+source(here::here("code/load_data.R"), echo=TRUE)
+dat_nona <- readRDS(here::here("data","analysis_data_primary.rds"))
+
+clust <- readRDS(here::here("data","dat_scale.rds")) %>% 
+  sf::st_drop_geometry() 
+
+# Unadjusted fits
+fit_base <- readRDS(here::here("output","fit_base.rds"))
+fit_list_pov <- readRDS(here::here("output","fit_list_pov.rds"))
+
+priors <- c(prior(normal(-2, 2), class = Intercept),
+            prior(normal(0,10), class = b),
+            prior(cauchy(0,1), class = sd, group = "clustid"))
+
+```
+
+# Summarise each sample by age and sex
+
+## Household survey
+
+Reported population across sampled households.
+
+```{r household_pop}
+
+hh %>% 
+  dplyr::select(hh_id, h07hh_number:h09hh_minor_num, starts_with("h10"), starts_with("hh11")) -> hh_
+
+# Total household members
+sum(hh$h08hh_adults_num) # 20555
+n_distinct(hh$hh_id) # 7175
+
+hh_ %>% 
+  dplyr::select(!starts_with("hh11")) %>% 
+  pivot_longer(starts_with("h10")) %>% 
+  rename(age = value) %>% 
+  mutate(name = gsub("h10membr_age","",name)) -> hh_age_long
+
+hh_ %>% 
+  dplyr::select(!starts_with("h10")) %>% 
+  pivot_longer(starts_with("hh11")) %>% 
+  rename(sex = value) %>% 
+  mutate(name = gsub("hh11membr_sex","",name)) -> hh_sex_long
+
+hh_long <- hh_age_long %>% 
+  full_join(hh_sex_long) %>% 
+  filter(!(is.na(age & is.na(sex)))) 
+
+# 88 appears to be a missing code
+hist(hh_long$age)
+
+hh_long <- hh_long %>% 
+  mutate(age = ifelse(age < 0, NA, age),
+         age = na_if(age, 88))
+
+hist(hh_long$age)
+summary(hh_long)
+# No missing sex
+
+hh_long <- hh_long %>% 
+  group_by(hh_id) %>%
+  mutate(hh_tot = sum(!is.na(sex))) %>%
+  filter(!is.na(sex)) %>%
+  mutate(sex = factor(sex, levels = 1:2, labels = c("Male","Female")),
+         hh_tot_match = (h07hh_number == hh_tot),
+         agegp = factor(cut(age, 
+                            breaks = c(17,24,34,44,54,120)),
+                        levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]"))) 
+  
+hh_dist <- hh_long %>% 
+  # exclude minors
+  filter(!is.na(agegp)) %>% 
+  group_by(sex, agegp) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(survey = "Household")
+
+```
+
+## Individual survey
+
+Calculate totals by age and sex for primary and extended survey samples
+
+```{r ind_survey}
+
+# First redefine age groups
+ind <- mutate(ind,
+              agegp = factor(cut(s09age, 
+                                 breaks = c(17,24,34,44,54,120)),
+                        levels = c("(17,24]","(24,34]","(34,44]","(44,54]","(54,120]")))
+
+# Primary
+ind %>% 
+  group_by(sex, agegp) %>% 
+  count() %>% 
+  # Calculate distribution across age groups for male/female
+  # group_by(sex) %>% 
+  # mutate(p = n/n()) %>% 
+  ungroup() %>%
+  mutate(survey = "Primary") -> ind_dist
+ind_dist
+
+# Extended
+ind %>% 
+  filter(!is.na(s50tb_medtest)) %>% 
+  group_by(sex, agegp) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(survey = "Extended") -> ext_dist
+ext_dist
+
+```
+
+## SCALE survey clusters (Mcewen's population estimates)
+
+```{r scale_clusters}
+
+clust %>% 
+  summarise(across(male_adults:female_adults, sum),
+            survey = "Cluster total") %>% 
+  pivot_longer(-survey, names_to = "sex", values_to = "n") %>% 
+  mutate(sex = stringr::str_to_sentence(gsub("_adults","",sex))) -> clust_dist
+
+```
+
+# Totals
+
+```{r calc_totals}
+
+sum(clust$total)
+sum(hh_dist$n)
+sum(ind_dist$n)
+sum(ext_dist$n)
+
+```
+
+# Compare by sex
+
+What proportion female across surveyed clusters, sampled households, and survey participants?
+
+```{r  compare_sex}
+
+clust_dist %>%  
+  bind_rows(hh_dist) %>% 
+  bind_rows(ind_dist) %>% 
+  bind_rows(ext_dist) %>% 
+  group_by(survey, sex) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(survey) %>% 
+  mutate(N = sum(n)) %>% 
+  ungroup() %>% 
+  mutate(p = n/N,
+         low = binconf(n, N, method = "exact")[,2],
+         hi = binconf(n, N, method = "exact")[,3]) %>% 
+  mutate(across(p:hi, function(x)x*100),
+         survey = factor(survey, 
+                         levels = c("Cluster total","Household","Primary","Extended"), 
+                         labels = c("Survey area\ntotal",
+                                    "Household\nsurvey",
+                                    "Primary\nsurvey",
+                                    "Extended\nsurvey"))) -> bysex
+
+bysex %>% 
+  filter(sex == "Female") %>% 
+  ggplot(aes(x = survey, y = p, ymin = low, ymax = hi)) +
+  geom_errorbar( width = 0.2)+
+  geom_point() + 
+  labs(x = "", y = "% Female", col = "") +
+  theme(text = element_text(size = 14)) -> prop_female
+
+prop_female
+# ggsave(here::here(figdir, "compare_prop_female.png"), height = 4, width = 5)
+
+```
+
+# Compare by age
+
+```{r compare_primary_extended1}
+
+ind_dist %>% 
+  bind_rows(ext_dist) %>%
+  filter(!is.na(agegp)) %>% 
+  group_by(survey, agegp) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(survey) %>% 
+  mutate(p = n/sum(n)) %>%
+  mutate(p = ifelse(survey == "Primary", p*(-1), p*1)) %>%
+  ggplot(aes(x = agegp, y = p, fill = survey)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_y_continuous(limits = c(-0.4, 0.4)) +
+  labs(fill = "", y = "Proportion", x = "Age group") 
+
+hh_dist %>% 
+  bind_rows(ext_dist) %>%
+  filter(!is.na(agegp)) %>% 
+  group_by(survey, agegp) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(survey) %>% 
+  mutate(p = n/sum(n)) %>%
+  mutate(p = ifelse(survey == "Household", p*(-1), p*1)) %>%
+  ggplot(aes(x = agegp, y = p, fill = survey)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_y_continuous(limits = c(-0.4, 0.4)) +
+  labs(fill = "", y = "Proportion", x = "Age group") 
+
+# ggsave(here::here(figdir, "hh_extended_age_pyramid.png"), height = 5, width = 5)
+
+```
+Proportions falling into each age group are roughly similar between the household and sub-sampled extended survey, but survey has a higher proportion of younger participants. 
+
+# Compare by age and sex
+
+```{r hh_byagesex}
+
+compare <- ind_dist %>%
+  bind_rows(ext_dist) %>% 
+  bind_rows(hh_dist) %>% 
+  filter(!is.na(agegp)) %>% 
+  mutate(survey = factor(survey, levels = c("Household","Primary","Extended")))
+  
+compare %>% 
+  filter(survey != "Primary") %>% 
+  mutate(n = ifelse(sex == "Male", n*(-1), n*1)) %>% 
+  ggplot(aes(x = agegp, y = n, fill = sex)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(fill = "", y = "Frequency", x = "Age group") +
+  facet_wrap(~survey, scales = "free_x") +
+  theme(text = element_text(size = 14))
+
+compare %>% 
+  filter(survey != "Primary") %>% 
+  group_by(survey) %>% 
+  mutate(p = n/sum(n)) %>% #View
+  ggplot(aes(x = agegp, y = p, col = survey, group = survey)) + 
+  geom_line() +
+  geom_point() +
+  facet_wrap(~sex) +
+  theme(legend.position = c(0.9, 0.8)) +
+  labs(fill = "", y = "Proportion", x = "Age group", col = "") +
+  theme(text = element_text(size = 14)) -> compare_age_sex
+
+
+prop_female + compare_age_sex + plot_annotation(tag_levels = "A") +
+  plot_layout(widths = c(2,3))
+
+ggsave(here::here(figdir, "figs1.png"), height = 4, width = 12)
+
+```
+
+
+```{r compare_hh_extended}
+
+compare %>%
+  filter(!is.na(agegp)) %>% 
+  group_by(survey, agegp) %>% 
+  summarise(Male = sum(n[sex == "Male"]),
+            Female = sum(n[sex == "Female"])) %>% 
+  pivot_longer(-c(survey, agegp)) %>% 
+  mutate(value = ifelse(name == "Male", value*(-1), value*1)) %>%
+  ggplot(aes(x = agegp, y = value, fill = name)) + 
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(fill = "", y = "Frequency", x = "Age group") +
+  facet_wrap(~survey, scales = "free_x")
+
+# ggsave(here::here(figdir, "sample_age_sex_pyramid.png"), height = 5, width = 6)
+
+```
+
+# Post-stratification
+
+Relative to the household survey population, by age group and sex.
+
+Refit primary model to be multilevel, with random intercepts on each of the post-strat characteristics.
+
+```{r refit_mlm}
+
+fit_base_ml <- brm(test01 ~ factor(sex) + factor(sex)*factor(agegp) + 
+                     (1 | agegp) + (1 | hiv) + (1 | clustid), 
+                   data = dat_nona,
+                   prior = priors,
+                   family = "bernoulli")
+
+```
+
+```{r ps}
+
+hh_dist %>% 
+  mutate(prop = n/sum(n),
+         freq = 72) %>% 
+  tidyr::uncount(freq) %>% 
+  mutate(clustid = rep(1:72, 10)) -> ps_data
+
+ps_epred <- posterior_epred(fit_base, newdata = ps_data)
+
+```
+
+
