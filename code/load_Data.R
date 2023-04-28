@@ -91,7 +91,8 @@ dat_all <- readRDS("C:/Users/phpuenig/Dropbox/SCALE_Hit-TB_modelling-resources/M
                 # Household data
                 hh_id, gps_lat, gps_lng, gps_alt, gps_acc, hh_per_room, pov_score, wealth_step, 
                 # Individual data
-                s07sex, sex, s09age, agegp, hiv, hiv_combined, hiv_art,
+                s07sex, sex, s09age, agegp, 
+                hiv_ever, hiv, hiv_combined, hiv_art,
                 # Current TB 
                 any_cough, any_tb_symp,
                 # Known TB

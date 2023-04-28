@@ -1,6 +1,6 @@
 ---
 title: "Prev_survey_trial"
-author: "Helena Feasey"
+author: "Helena Feasey, Emily Nightingale"
 date: "13/01/2022"
 output: html_document
 ---
@@ -83,6 +83,10 @@ mutate(sex = case_when(s07sex==1 ~ "Male",
   mutate(previous_tb = case_when(s56tb_evrtst==1 ~ "Yes",
                                   s56tb_evrtst==2 ~ "No"),
          previous_tb = fct_relevel(previous_tb, "Yes", "No")) %>%
+  mutate(hiv_ever = case_when(s72hiv_ever==1 ~ "Yes",
+                                    s72hiv_ever==2 ~ "No",
+                                    TRUE ~ NA_character_),
+         hiv_ever = fct_relevel(hiv_ever, "Yes", "No")) %>%
   mutate(s74hiv_rectest = case_when(s74hiv_rectest==1 ~ "Positive",
                                     s74hiv_rectest==2 ~ "Negative",
                                     s74hiv_rectest==3 ~ "Inconclusive",
@@ -159,9 +163,12 @@ Define overall HIV status according to screening result, self-reporting of previ
 ```{r tidy_hiv}
 
 # Create overall HIV/ART status variable
+table(screening$hiv_ever, useNA = "always")
 table(screening$s74hiv_rectest, useNA = "always")
 table(screening$s80hiv_art, useNA = "always")
 table(screening$s82hiv_crart, useNA = "always")
+
+table(screening$hiv_ever, screening$s80hiv_art, useNA = "always")
 table(screening$s74hiv_rectest, screening$s80hiv_art, useNA = "always")
 table(screening$s80hiv_art, screening$s82hiv_crart, useNA = "always")
 table(screening$s74hiv_rectest, screening$s82hiv_crart, useNA = "always")
@@ -227,14 +234,12 @@ individual_survey <- individual_survey %>%
 table(individual_survey$hiv_combined, useNA = "always")
 
 individual_survey %>% 
-  dplyr::select(s72hiv_ever:s86hiv_attend, d12sumres, hiv_art:hiv_combined) %>% 
+  dplyr::select(hiv_ever:s86hiv_attend, d12sumres, hiv_art:hiv_combined) %>% 
   dplyr::filter(hiv_combined == "HIV unknown") -> hiv_miss
 
 summary(hiv_miss)
 
 hiv_miss$hiv_combined2 = hiv_miss$hiv_combined
-
-
 
 ```
 
@@ -510,7 +515,9 @@ individual_survey <- ungroup(individual_survey)
 household_survey <- ungroup(household_survey)
 
 survey <- individual_survey %>% 
-  left_join(dplyr::select(household_survey, hh_id, h02cl_id, h44gpsid:gps_acc, total_hhmember:wealth_quantil, h22hh_step))
+  left_join(dplyr::select(household_survey, 
+                          hh_id, h02cl_id, h44gpsid:gps_acc, 
+                          total_hhmember:wealth_quantil, h22hh_step))
 
 saveRDS(individual_survey, file.path(datadir, "individual_clean.rds"))
 saveRDS(household_survey, file.path(datadir, "household_clean.rds"))
