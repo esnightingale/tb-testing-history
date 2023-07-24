@@ -399,8 +399,8 @@ plot_model(fit2a,
            order.terms = c(1,2,3,4,5,7,8,9,10,6),
            transform = NULL, 
            title = "",
-           axis.labels = rev(c("Male","Age (24,34]", "Age (34,44]", "Age (44,54]", "Age > 55",
-                           "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age > 55",
+           axis.labels = rev(c("Male","Age (24,34]", "Age (34,44]", "Age (44,54]", "Age \u2265 55",
+                           "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age \u2265 55",
                            "HIV positive"))
            ) + 
   # geom_hline(yintercept = 0, lty = "dashed", col = "grey") +
@@ -408,7 +408,7 @@ plot_model(fit2a,
   theme(text = element_text(size = 16)) -> plot_base_coeffs
 
 plot_base_coeffs
-# ggsave(here::here(figdir,"fixeff_baseline.png"), height = 6, width = 6)
+ggsave(here::here(figdir,"fixeff_baseline.png"), height = 6, width = 6)
 
 ```
 ## Calculate expected cluster-level values for reference covariate values
