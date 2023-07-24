@@ -512,14 +512,15 @@ ggsave(here::here(figdir,"box_test_prev_byclust.png"),
 plot_byarea(by_clust, clust, varname = "perc_test_history", lab = "%") +
   # geom_sf(data = clinics, aes(pch = "TB Clinic")) +
   scale_shape_manual(values = 15) +
-  # scale_fill_viridis_c(option = "inferno", direction = -1) +
-  scale_fill_gradient2(midpoint = mean(by_clust$perc_test_history), low = "red", high = "blue") +
+  scale_fill_viridis_c(option = "inferno", direction = -1) +
+  # scale_fill_gradient2(midpoint = mean(by_clust$perc_test_history), low = "red", high = "blue") +
   theme(axis.text = element_blank(), axis.ticks = element_blank(), 
         text = element_text(size = 16)) +
   labs(x = "", y = "", 
        fill = "%",
        lty = "", pch = "", 
-       subtitle = "% respondents reporting previous sputum test or CXR") -> test_byclust
+       subtitle = "% respondents reporting previous sputum test or CXR",
+       caption = NULL) -> test_byclust
 
 test_byclust
 ggsave(here::here(figdir,"test_history_byclust.png"), 
@@ -527,7 +528,7 @@ ggsave(here::here(figdir,"test_history_byclust.png"),
        height = 5, width = 6)
 
 test_byclust + boxplot_testtype + plot_annotation(tag_levels = "A") +
-  plot_layout(widths = c(1,1.2))
+  plot_layout(widths = c(1,1.1))
 ggsave(here::here("figures/manuscript","fig2.png"), 
        height = 5, width = 12, dpi = 500)
 
