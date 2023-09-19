@@ -475,8 +475,11 @@ map_clustiid / map_clustiid_sd
 ggsave(here::here(figdir, "cluster_iid_baseline.png"), height = 10, width = 6)
 
 # Combine plots for paper
-plot_base_coeffs + (map_clustiid / map_clustiid_sd) + plot_annotation(tag_levels = "A")
+plot_base_coeffs + (map_clustiid / map_clustiid_sd) + plot_annotation(tag_levels = "A") -> fig5
+fig5
 ggsave(here::here("figures/manuscript", "fig5.png"), height = 9, width = 12)
+ggsave(here::here("figures/manuscript", "fig5.pdf"),
+       height = 9, width = 12, dpi = 500)
 
 ```
 

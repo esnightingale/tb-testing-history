@@ -159,11 +159,15 @@ Hmisc::binconf(sum(dat_nona$ever_test == "Yes"), nrow(dat_nona))
 
 dat_nona %>% 
   filter(ever_test == "Yes") %>% 
-  mutate(time_since_test = time_length(difftime(today, last_test), "years")) -> tested 
+  mutate(time_since_test = time_length(difftime(today, last_test), "months")) -> tested 
   
 summary(tested$last_test)
 #         Min.      1st Qu.       Median         Mean      3rd Qu.         Max.         NA's 
 # "1995-05-01" "2018-01-01" "2019-03-01" "2017-07-07" "2019-09-01" "2019-12-01"        "248" 
+
+summary(tested$time_since_test)
+# Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+#  -0.4928   2.4394   6.9487  27.7345  23.3347 289.6099      248 
 
 mean(is.na(tested$last_test))
 # 0.5990338
@@ -183,23 +187,36 @@ summary(tested$last_test > as.Date("01/01/2016"))
 #    Mode    TRUE    NA's 
 # logical     166     248 
 
+# Make table
 tested %>% 
   pivot_longer(c("last_sputum","last_xray")) %>% 
-  mutate(time_since_test = time_length(difftime(today, value), "years")) %>% 
+  mutate(time_since_test = time_length(difftime(today, value), "months")) -> tmp
+
+tested %>% 
+  mutate(name = "overall",
+         value = last_test) %>% 
+  bind_rows(tmp) %>%  
   group_by(name) %>% 
-  summarise(min = min(value, na.rm = T),
+  summarise(nonmissing = sum(!is.na(value)),
+            min = min(value, na.rm = T),
             median = median(value, na.rm = T),
             max = max(value, na.rm = T),
-            diff = time_length(difftime(max, min), "years"),
-            time_since_test = median(time_since_test, na.rm = T))
+            # diff = time_length(difftime(max, min), "years"),
+            time_since_test_med = round(median(time_since_test, na.rm = T), 2),
+            time_since_test_iqr = paste(round(quantile(time_since_test,
+                                                       c(0.25,0.75),
+                                                       na.rm = T),
+                                              2), 
+                                        collapse = "-"),
+            tested_12m_n = sum(!is.na(value) & time_since_test < 12),
+            tested_12m_n_p = paste0(tested_12m_n, " (",
+                                   round(tested_12m_n*100/nonmissing,1), 
+                                   ")")) -> tab_lasttest
 
-#   name        min        median     max         diff time_since_test
-# 1 last_sputum 1995-05-01 2019-01-01 2019-12-01  24.6           0.813
-# 2 last_xray   2003-12-01 2019-04-01 2019-12-01  16             0.537
+tab_lasttest
 
-summary(tested$time_since_test)
-#     Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
-# -0.04107  0.20329  0.57906  2.31121  1.94456 24.13415      248 
+# Save table
+write_csv(tab_lasttest, here::here("output/descriptive","tabS1_last_test.csv"))
 
 # ---------------------------------------------------------------------------- #
 # Sample age-sex distribution
@@ -528,8 +545,11 @@ ggsave(here::here(figdir,"test_history_byclust.png"),
        height = 5, width = 6)
 
 test_byclust + boxplot_testtype + plot_annotation(tag_levels = "A") +
-  plot_layout(widths = c(1,1.1))
+  plot_layout(widths = c(1,1.1)) -> fig2
+fig2
 ggsave(here::here("figures/manuscript","fig2.png"), 
+       height = 5, width = 12, dpi = 500)
+ggsave(here::here("figures/manuscript","fig2.pdf"), 
        height = 5, width = 12, dpi = 500)
 
 by_clust %>% 
@@ -764,13 +784,36 @@ ggsave(here::here(figdir,"std_test12m_bycluster.png"),
 
 dat_noHHna <- filter(dat, !is.na(pov_score))
 
+# Plot  scores against each other
+dat %>% 
+  filter(!is.na(pov_score)) %>% 
+  ggplot(aes(as.factor(wealth_step), pov_score)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_boxplot() +
+  theme(text = element_text(size = 16)) +
+  labs(x = "Self-assessed wealth", y= "PMT poverty score") -> score_by_step
+
+pov_by_clust %>% 
+  ggplot(aes(pmt, step)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  theme(text = element_text(size = 16)) +
+  labs(y = "Cluster mean self-assessed wealth", x = "Cluster mean PMT score") -> clust_score_by_step
+
+score_by_step + clust_score_by_step + plot_annotation(tag_levels = "A") -> fig3
+fig3
+ggsave(here::here("figures/manuscript","fig3.png"), 
+       height = 5, width = 12, dpi = 350)
+ggsave(here::here("figures/manuscript","fig3.pdf"), 
+       height = 5, width = 12, dpi = 350)
+
 pmt_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$pov_score > 0), n = nrow(dat_noHHna)),2)
 pmt_overall
 # PointEst Lower Upper
 #        5     4     6
 
 quant1_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$wealth_quant == 1), n = nrow(dat_noHHna)),2)
-quant_overall
+quant1_overall
 # PointEst Lower Upper
 #    15     14     17
 
@@ -778,6 +821,8 @@ step1_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$wealth_step == 1), 
 step1_overall
 # PointEst Lower Upper
 #        7     6     8
+
+# Map scores by cluster
 
 dat %>% 
   filter(!is.na(pov_score)) %>% 
@@ -809,31 +854,12 @@ pov_by_clust_long %>%
   facet_wrap(~name) +
   scale_fill_viridis_c(option = "inferno", direction = -1) +
   labs(caption = NULL) +
-  theme(text = element_text(size = 16))
-
+  theme(text = element_text(size = 16)) -> fig4
+fig4
 ggsave(here::here("figures/manuscript","fig4.png"), 
        height = 4, width = 8, dpi = 350)
-
-
-# Plot  scores against each other
-dat %>% 
-  filter(!is.na(pov_score)) %>% 
-  ggplot(aes(as.factor(wealth_step), pov_score)) +
-  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
-  geom_boxplot() +
-  theme(text = element_text(size = 16)) +
-  labs(x = "Self-assessed wealth", y= "PMT poverty score") -> score_by_step
-
-pov_by_clust %>% 
-  ggplot(aes(pmt, step)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth() +
-  theme(text = element_text(size = 16)) +
-  labs(y = "Cluster mean self-assessed wealth", x = "Cluster mean PMT score") -> clust_score_by_step
-
-score_by_step + clust_score_by_step + plot_annotation(tag_levels = "A") 
-ggsave(here::here("figures/manuscript","fig3.png"), 
-       height = 5, width = 12, dpi = 350)
+ggsave(here::here("figures/manuscript","fig4.pdf"), 
+       height = 4, width = 8, dpi = 350)
 
 #------------------------------------------------------------------------------#
 # Spatial autocorrelation in poverty measures
