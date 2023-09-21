@@ -216,6 +216,7 @@ ind_dist %>%
   mutate(p = ifelse(survey == "Primary", p*(-1), p*1)) %>%
   ggplot(aes(x = agegp, y = p, fill = survey)) + 
   geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "viridis", begin = 0.1, end = 0.8) +
   coord_flip() +
   scale_y_continuous(limits = c(-0.4, 0.4)) +
   labs(fill = "", y = "Proportion", x = "Age group") 
@@ -230,11 +231,12 @@ hh_dist %>%
   mutate(p = ifelse(survey == "Household", p*(-1), p*1)) %>%
   ggplot(aes(x = agegp, y = p, fill = survey)) + 
   geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "viridis", begin = 0.1, end = 0.8) +
   coord_flip() +
   scale_y_continuous(limits = c(-0.4, 0.4)) +
   labs(fill = "", y = "Proportion", x = "Age group") 
 
-# ggsave(here::here(figdir, "hh_extended_age_pyramid.png"), height = 5, width = 5)
+ggsave(here::here(figdir, "hh_extended_age_pyramid.png"), height = 5, width = 5)
 
 ```
 Proportions falling into each age group are roughly similar between the household and sub-sampled extended survey, but survey has a higher proportion of younger participants. 
@@ -254,10 +256,12 @@ compare %>%
   mutate(n = ifelse(sex == "Male", n*(-1), n*1)) %>% 
   ggplot(aes(x = agegp, y = n, fill = sex)) + 
   geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "turbo", begin = 0.1, end = 0.8) +
   coord_flip() +
   labs(fill = "", y = "Frequency", x = "Age group") +
   facet_wrap(~survey, scales = "free_x") +
   theme(text = element_text(size = 14))
+ggsave(here::here(figdir, "compare_agesex_pyramid.png"), height = 4, width = 12)
 
 compare %>% 
   filter(survey != "Primary") %>% 
@@ -267,6 +271,8 @@ compare %>%
   geom_line() +
   geom_point() +
   facet_wrap(~sex) +
+  # scale_colour_viridis_d(option = "viridis", begin = 0.1, end = 0.8) +
+  scale_colour_viridis_d(option = "turbo", begin = 0.1, end = 0.8) +
   theme(legend.position = c(0.9, 0.8)) +
   labs(fill = "", y = "Proportion", x = "Age group", col = "") +
   theme(text = element_text(size = 14)) -> compare_age_sex
@@ -292,39 +298,13 @@ compare %>%
   ggplot(aes(x = agegp, y = value, fill = name)) + 
   geom_bar(stat = "identity") +
   coord_flip() +
+  scale_fill_viridis_d(option = "viridis", begin = 0.1, end = 0.8) +
   labs(fill = "", y = "Frequency", x = "Age group") +
   facet_wrap(~survey, scales = "free_x")
 
-# ggsave(here::here(figdir, "sample_age_sex_pyramid.png"), height = 5, width = 6)
+ggsave(here::here(figdir, "compare_agesex_pyramid2.png"), height = 5, width = 15)
 
 ```
 
-# Post-stratification
-
-Relative to the household survey population, by age group and sex.
-
-Refit primary model to be multilevel, with random intercepts on each of the post-strat characteristics.
-
-```{r refit_mlm}
-
-fit_base_ml <- brm(test01 ~ factor(sex) + factor(sex)*factor(agegp) + 
-                     (1 | agegp) + (1 | hiv) + (1 | clustid), 
-                   data = dat_nona,
-                   prior = priors,
-                   family = "bernoulli")
-
-```
-
-```{r ps}
-
-hh_dist %>% 
-  mutate(prop = n/sum(n),
-         freq = 72) %>% 
-  tidyr::uncount(freq) %>% 
-  mutate(clustid = rep(1:72, 10)) -> ps_data
-
-ps_epred <- posterior_epred(fit_base, newdata = ps_data)
-
-```
 
 

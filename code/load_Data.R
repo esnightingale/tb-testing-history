@@ -45,7 +45,15 @@ clinicarea <- clust %>%
 bb <- st_bbox(clust)
 e <- c(bb$xmin, bb$ymin, bb$xmax, bb$ymax)
 names(e) <- c("left","bottom","right","top")
-blt_lines <- get_map(location = e, source = "stamen", maptype = "terrain", zoom = 12)
+# blt_lines <- get_map(location = e, 
+#                      source = "stamen",
+#                      maptype = "terrain",
+#                      color = "bw",
+#                      zoom = 12)
+blt_lines <- get_stamenmap(bbox = e, 
+                           maptype = "toner-lite",
+                           zoom = 12)
+# ggmap(blt_lines)
 
 #------------#
 # Population #
@@ -56,10 +64,11 @@ popMLW <- raster::raster(x = pop.path)
 
 # Crop to same map extent
 popBLT <- raster::crop(popMLW, raster::extent(bb))
+popBLT_mask <- raster::mask(popBLT, clust)
 # plot(popBLT)
 
 # Reformat for later plotting
-popBLT_spdf <- as(popBLT, "SpatialPixelsDataFrame")
+popBLT_spdf <- as(popBLT_mask, "SpatialPixelsDataFrame")
 popBLT_df <- as.data.frame(popBLT_spdf)
 
 #-------------------------#

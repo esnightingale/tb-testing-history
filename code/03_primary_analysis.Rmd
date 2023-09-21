@@ -204,6 +204,7 @@ logORtab %>%
   geom_point() +
   coord_flip() +
   scale_x_discrete(limits = rev(levels(logORtab$term)), labels = rev(labs)) +
+  scale_colour_viridis_c(option = "inferno", end = 0.9) +
   guides(col = "none") +
   theme(text = element_text(size = 14)) +
   labs(x = "", y = "Estimate (log-odds ratio)") -> pov_coeffs
@@ -211,7 +212,7 @@ pov_coeffs
 ggsave(here::here(figdir, "compare_pov_coeffs.png"), pov_coeffs, height = 6, width = 6)
 
 pov_coeffs + pov_clustsd + plot_annotation(tag_levels = 'A')
-ggsave(here::here(figdir,"supplementary", "compare_pov_mods.png"), height = 6, width = 12)
+ggsave(here::here(figdir,"supplementary", "figs6.png"), height = 6, width = 12)
 
 ```
 

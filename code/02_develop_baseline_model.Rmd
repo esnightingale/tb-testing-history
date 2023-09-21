@@ -403,8 +403,10 @@ plot_model(fit2a,
                            "Male : Age (24,34]","Male : Age (34,44]","Male : Age (44,54]", "Male : Age \u2265 55",
                            "HIV positive"))
            ) + 
-  # geom_hline(yintercept = 0, lty = "dashed", col = "grey") +
+  geom_hline(yintercept = 0, lty = "dashed", col = "darkgrey") +
   scale_y_continuous(limits = c(-1,2)) + 
+  scale_colour_viridis_d(option = "turbo", begin = 0.05, end = 0.8, direction = -1) +
+  scale_fill_viridis_d(option = "turbo", begin = 0.05, end = 0.8, direction = -1) +
   theme(text = element_text(size = 16)) -> plot_base_coeffs
 
 plot_base_coeffs
@@ -441,9 +443,13 @@ plot_preds %>%
 
 mid <- mean(preds_hdi$.prediction[preds_hdi$draw_type == "Expectation of predicted draws"])
 
+pal <- viridis::turbo(2, begin = 0.1, end = 0.8)
 preds_hdi %>% 
   filter(draw_type == "Expectation of predicted draws") %>% 
-plot_byarea(clust, varname = ".prediction", lab = "Expectation of\npredicted draws", midpoint = mid) +
+plot_byarea(clust, varname = ".prediction", 
+            lab = "Expectation of\npredicted draws", midpoint = mid,
+            low = pal[1], high = pal[2]) +
+  scale_fill_viridis_c(direction = -1) +
   labs(title = "Cluster level prevalence of testing",
        subtitle = "Adjusted for age group, sex and HIV status",
        caption = paste0("Number of posterior draws = ",m))
@@ -462,23 +468,25 @@ fit2a %>%
   summarise_draws() -> fitted_iid
 fitted_iid
   
-plot_byarea(fitted_iid, clust, varname = "mean", lab = "Posterior mean", midpoint = 0) +
+plot_byarea(fitted_iid, clust, varname = "mean", lab = "Posterior\nmean", midpoint = 0) +
   labs(title = "Cluster level residuals ",
        subtitle = "Adjusted for age group, sex and HIV status",
        caption =  NULL) + 
+  scale_fill_viridis_c(option = "viridis", direction = -1) +
   theme(text = element_text(size = 16)) -> map_clustiid
-plot_byarea(fitted_iid, clust, varname = "sd", lab = "Posterior SD") +
-  scale_fill_gradient(low = "white", high = "blue") + 
+plot_byarea(fitted_iid, clust, varname = "sd", lab = "Posterior\nSD") +
+  # scale_fill_gradient(low = "white", high = "blue") + 
+  scale_fill_viridis_c(option = "viridis", direction = -1) +
   labs(caption =  paste0("Number of posterior draws = ",m)) + 
   theme(text = element_text(size = 16)) -> map_clustiid_sd
 map_clustiid / map_clustiid_sd
 ggsave(here::here(figdir, "cluster_iid_baseline.png"), height = 10, width = 6)
 
 # Combine plots for paper
-plot_base_coeffs + (map_clustiid / map_clustiid_sd) + plot_annotation(tag_levels = "A") -> fig5
-fig5
-ggsave(here::here("figures/manuscript", "fig5.png"), height = 9, width = 12)
-ggsave(here::here("figures/manuscript", "fig5.pdf"),
+plot_base_coeffs + (map_clustiid / map_clustiid_sd) + plot_annotation(tag_levels = "A") -> fig3
+fig3
+ggsave(here::here("figures/manuscript", "fig3.png"), height = 9, width = 12)
+ggsave(here::here("figures/manuscript", "fig3.pdf"),
        height = 9, width = 12, dpi = 500)
 
 ```

@@ -39,10 +39,12 @@ dat_nona <- dat %>%
 
 ggmap(blt_lines, 
       base_layer = ggplot(clust)) +
-  geom_raster(data = popBLT_df, aes(x, y, fill = mwi_ppp_2019_UNadj), alpha = 0.5) +
-  geom_sf(data = clust, fill = NA, aes(lty = "Survey cluster")) +
+  geom_raster(data = popBLT_df, aes(x, y, fill = mwi_ppp_2019_UNadj)) +
+  geom_sf(data = clust, fill = NA, 
+          col = "black", 
+          aes(lty = "Survey cluster")) +
   geom_sf(data = clinics, aes(pch = "TB clinic")) +
-  scale_fill_viridis_c(trans = "sqrt", option = "magma", direction = -1, begin = 0.2) +
+  scale_fill_viridis_c(trans = "sqrt", option = "rocket", direction = -1, begin = 0.15) +
   scale_shape_manual(values = 15) +
   labs(x = "", y = "", 
        caption = NULL,
@@ -58,7 +60,7 @@ ggmap(blt_lines,
 ggsave(here::here(figdir,"study_region.png"), 
        height = 5, width = 7, dpi = 500)
 
-ggsave(here::here("figures/manuscript","fig1.png"), 
+ggsave(here::here("figures/manuscript","study_region.png"), 
        height = 5, width = 7, dpi = 500)
 
 # ---------------------------------------------------------------------------- #
@@ -247,10 +249,12 @@ dat %>%
   geom_point(alpha = 0.2) +
   geom_smooth() +
   guides(fill = "none") +
+  scale_colour_viridis_d(option = "turbo", begin = 0.1, end = 0.8) +
+  scale_fill_viridis_d(option = "turbo", begin = 0.1, end = 0.8) + 
   labs(x = "Age (years)", y = "Ever tested", col = "Sex") +
   theme(text = element_text(size = 14))
 
-ggsave(here::here("figures/manuscript/supplementary", "figs4.png"), height = 5, width = 6)
+ggsave(here::here("figures/manuscript/supplementary", "figs5.png"), height = 5, width = 6)
 
 # Grouped age
 pos <- position_dodge(0.5)
@@ -545,11 +549,11 @@ ggsave(here::here(figdir,"test_history_byclust.png"),
        height = 5, width = 6)
 
 test_byclust + boxplot_testtype + plot_annotation(tag_levels = "A") +
-  plot_layout(widths = c(1,1.1)) -> fig2
-fig2
-ggsave(here::here("figures/manuscript","fig2.png"), 
+  plot_layout(widths = c(1,1.1)) -> fig1
+fig1
+ggsave(here::here("figures/manuscript","fig1.png"), 
        height = 5, width = 12, dpi = 500)
-ggsave(here::here("figures/manuscript","fig2.pdf"), 
+ggsave(here::here("figures/manuscript","fig1.pdf"), 
        height = 5, width = 12, dpi = 500)
 
 by_clust %>% 
@@ -561,7 +565,7 @@ by_clust %>%
 plot_byarea(by_clust_long, clust, varname = "value", lab = "%") +
   # geom_sf(data = clinics, aes(pch = "TB Clinic")) +
   # scale_shape_manual(values = 15) +
-  # scale_fill_viridis_c(option = "inferno", direction = -1) +
+  scale_fill_viridis_c(option = "inferno", direction = -1) +
   labs(x = "", y = "", 
        fill = "%",
        lty = "", pch = "",
@@ -584,14 +588,14 @@ dat %>%
                        labels = c("Sputum","CXR"))) -> by_clinic_long
 
 plot_byarea(by_clinic_long, clinicarea, varname = "value", lab = "%") +
-  # geom_sf(data = clinics, aes(pch = "TB Clinic")) +
-  # scale_shape_manual(values = 15) +
-  # scale_fill_viridis_c(option = "inferno", direction = -1) +
+  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
+  scale_shape_manual(values = 15) +
+  scale_fill_viridis_c(option = "inferno", direction = -1) +
   labs(x = "", y = "", 
        fill = "%",
        lty = "", pch = "",
-       # caption = NULL,
-       subtitle = "% respondents reporting previous test or chest x-ray, by clinic") +
+       caption = NULL,
+       subtitle = "% respondents reporting previous test or chest x-ray, by clinic area") +
   facet_wrap(~name)
 ggsave(here::here(figdir,"test_history_byclinic_type.png"), height = 5, width = 10)
 
@@ -629,38 +633,6 @@ par(mfrow = c(1,2))
 plot(MC_sp, main="", las=1, xlab = "Cluster % sputum")
 plot(MC_xr, main="", las=1, xlab = "Cluster % chest x-ray")
 dev.off()
-
-# ---------------------------------------------------------------------------- #
-# Map by clinic
-
-dat %>% 
-  left_join(clust_clinic, by = c("s02cl_id" = "clustid")) %>% 
-  group_by(clinic_id) %>% 
-  summarise(n = n(),
-            x = sum(ever_test == "Yes"),
-            x1 = sum(s50tb_medtest == 1),
-            x2 = sum(s53tb_evrxray == 1),
-            perc_test_history = 100*x/n,
-            perc_sputum = 100*x1/n,
-            perc_xray = 100*x2/n) -> dat_clinic
-
-clinic %>% 
-  full_join(dat_clinic) -> dat_clinic
-  
-ggmap(blt_lines, 
-      base_layer = ggplot(dat_clinic)) +
-  geom_sf(aes(fill = perc_test_history, lty = "Clinic area"), alpha = 0.5) +
-  geom_sf(data = clinics, aes(pch = "TB Clinic")) +
-  scale_shape_manual(values = 15) +
-  scale_fill_viridis_c(option = "inferno", direction = -1) +
-  theme(axis.text = element_blank()) +
-  labs(x = "", y = "", 
-       fill = "%",
-       lty = "", pch = "", 
-       subtitle = "% respondents reporting previous test or x-ray by clinic area") 
-
-ggsave(here::here(figdir,"test_history_byclinic.png"), 
-       height = 5, width = 6)
 
 # ---------------------------------------------------------------------------- #
 # Standardise over age, sex and HIV
@@ -782,48 +754,7 @@ ggsave(here::here(figdir,"std_test12m_bycluster.png"),
 # ---------------------------------------------------------------------------- #
 # Summarise poverty measures
 
-dat_noHHna <- filter(dat, !is.na(pov_score))
-
-# Plot  scores against each other
-dat %>% 
-  filter(!is.na(pov_score)) %>% 
-  ggplot(aes(as.factor(wealth_step), pov_score)) +
-  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
-  geom_boxplot() +
-  theme(text = element_text(size = 16)) +
-  labs(x = "Self-assessed wealth", y= "PMT poverty score") -> score_by_step
-
-pov_by_clust %>% 
-  ggplot(aes(pmt, step)) +
-  geom_point(alpha = 0.5) +
-  geom_smooth() +
-  theme(text = element_text(size = 16)) +
-  labs(y = "Cluster mean self-assessed wealth", x = "Cluster mean PMT score") -> clust_score_by_step
-
-score_by_step + clust_score_by_step + plot_annotation(tag_levels = "A") -> fig3
-fig3
-ggsave(here::here("figures/manuscript","fig3.png"), 
-       height = 5, width = 12, dpi = 350)
-ggsave(here::here("figures/manuscript","fig3.pdf"), 
-       height = 5, width = 12, dpi = 350)
-
-pmt_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$pov_score > 0), n = nrow(dat_noHHna)),2)
-pmt_overall
-# PointEst Lower Upper
-#        5     4     6
-
-quant1_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$wealth_quant == 1), n = nrow(dat_noHHna)),2)
-quant1_overall
-# PointEst Lower Upper
-#    15     14     17
-
-step1_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$wealth_step == 1), n = nrow(dat_noHHna)),2)
-step1_overall
-# PointEst Lower Upper
-#        7     6     8
-
 # Map scores by cluster
-
 dat %>% 
   filter(!is.na(pov_score)) %>% 
   group_by(clustid) %>% 
@@ -840,13 +771,6 @@ pov_by_clust_long <- pov_by_clust %>%
   mutate(name = factor(name, 
                        levels = c("perc_pmt_gt0", "perc_quant1","perc_step1"),
                        labels = c("PMT score > 0", "PMT score: 1st quantile","Self-assessed wealth: step 1"))) 
-pov_by_clust_long %>% 
-  ggplot(aes(x = name, y = value)) +
-  geom_boxplot() + 
-  labs(x = "",y = "Cluster percentage")
-
-ggsave(here::here(figdir,"box_poverty_byclust.png"), 
-       height = 5, width = 5)
 
 pov_by_clust_long %>% 
   filter(name != "PMT score: 1st quantile") %>% 
@@ -854,12 +778,59 @@ pov_by_clust_long %>%
   facet_wrap(~name) +
   scale_fill_viridis_c(option = "inferno", direction = -1) +
   labs(caption = NULL) +
-  theme(text = element_text(size = 16)) -> fig4
-fig4
-ggsave(here::here("figures/manuscript","fig4.png"), 
+  theme(text = element_text(size = 16)) -> figS4
+figS4
+ggsave(here::here("figures/manuscript/supplementary","figs4.png"), 
        height = 4, width = 8, dpi = 350)
-ggsave(here::here("figures/manuscript","fig4.pdf"), 
-       height = 4, width = 8, dpi = 350)
+# ggsave(here::here("figures/manuscript/supplementary","figs4.pdf"), 
+#        height = 4, width = 8, dpi = 350)
+
+# Plot  scores against each other
+
+pov_by_clust_long %>% 
+  ggplot(aes(x = name, y = value)) +
+  geom_boxplot() + 
+  labs(x = "",y = "Cluster percentage")
+ggsave(here::here(figdir,"box_poverty_byclust.png"), 
+       height = 5, width = 5)
+dat %>% 
+  filter(!is.na(pov_score)) %>% 
+  ggplot(aes(as.factor(wealth_step), pov_score)) +
+  geom_hline(yintercept = 0, col = "grey", lty = "dashed") +
+  geom_boxplot() +
+  theme(text = element_text(size = 16)) +
+  labs(x = "Self-assessed wealth", y= "PMT poverty score") -> score_by_step
+
+pov_by_clust %>% 
+  ggplot(aes(pmt, step)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth() +
+  theme(text = element_text(size = 16)) +
+  labs(y = "Cluster mean self-assessed wealth", x = "Cluster mean PMT score") -> clust_score_by_step
+
+score_by_step + clust_score_by_step + plot_annotation(tag_levels = "A") -> fig2
+fig2
+ggsave(here::here("figures/manuscript","fig2.png"), 
+       height = 5, width = 12, dpi = 350)
+ggsave(here::here("figures/manuscript","fig2.pdf"), 
+       height = 5, width = 12, dpi = 350)
+
+# Overall proportions of poorest
+dat_noHHna <- filter(dat, !is.na(pov_score))
+pmt_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$pov_score > 0), n = nrow(dat_noHHna)),2)
+pmt_overall
+# PointEst Lower Upper
+#        5     4     6
+
+quant1_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$wealth_quant == 1), n = nrow(dat_noHHna)),2)
+quant1_overall
+# PointEst Lower Upper
+#    15     14     17
+
+step1_overall <- 100*round(Hmisc::binconf(x = sum(dat_noHHna$wealth_step == 1), n = nrow(dat_noHHna)),2)
+step1_overall
+# PointEst Lower Upper
+#        7     6     8
 
 #------------------------------------------------------------------------------#
 # Spatial autocorrelation in poverty measures

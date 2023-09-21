@@ -168,12 +168,6 @@ plot_fit_CNR
 
 ```
 
-```{r testing_vs_CNRs}
-
-
-
-```
-
 # Missing HIV status
 
 ```{r make_data}
@@ -256,6 +250,7 @@ logORtab %>%
   geom_linerange(aes(ymin = conf.low, ymax = conf.high), position = position_dodge(width = 0.5), lwd = 1) +
   geom_linerange(aes(ymin = conf.low50, ymax = conf.high50), position = position_dodge(width = 0.5), lwd = 1.2) +
   geom_point(position = position_dodge(width = 0.5), col = "white", pch = 15, cex = 0.8) +
+  scale_colour_viridis_d(option = "turbo") +
   coord_flip() +
   scale_x_discrete(limits = rev(levels(logORtab$term)), labels = rev(labs)) +
   labs(x = "", y = "Estimate (log-odds ratio)") +
@@ -313,6 +308,7 @@ logORtab2 %>%
   geom_linerange(aes(ymin = conf.low50, ymax = conf.high50), position = position_dodge(width = 0.5), lwd = 0.8) +
   geom_point(position = position_dodge(width = 0.5), pch = 15, cex = 1.2) +
   coord_flip() +
+  scale_colour_viridis_d(option = "turbo", begin = 0.1, end = 0.9) +
   scale_x_discrete(limits = rev(levels(logORtab2$term)), labels = rev(labs)) +
   labs(x = "", y = "Estimate (log-odds ratio)", col = "Unknown HIV action") +
   theme(text = element_text(size = 14)) -> comp_hiv_mods
@@ -387,6 +383,7 @@ logORtab3 %>%
   geom_linerange(aes(ymin = conf.low50, ymax = conf.high50), position = position_dodge(width = 0.5), lwd = 0.8) +
   geom_point(position = position_dodge(width = 0.5), pch = 15, cex = 1.2) +
   coord_flip() +
+  scale_colour_viridis_d(option = "turbo", begin = 0.1, end = 0.9) +
   scale_x_discrete(limits = rev(levels(logORtab3$term)), labels = rev(labs2)) +
   labs(x = "", y = "Estimate (log-odds ratio)", col = "") +
   theme(text = element_text(size = 14)) -> comp_imp_all
