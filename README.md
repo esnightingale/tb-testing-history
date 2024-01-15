@@ -4,21 +4,23 @@ Code and data to support the analysis presented in the manuscript "Community-lev
 
 **Authors:**
 
-Emily S Nightingale (1)\*, Helena R A Feasey (2,3), McEwen Khundi (2,3), Rebecca Nzawa Soko (3), Rachael M Burke (2,3), Marriott Nliwasa (4), Hussein Twabi (4), James A Mpunga (5), Katherine Fielding (1), Peter MacPherson (3,6), Elizabeth L Corbett (2)
+Emily S Nightingale (1)\*, Helena R A Feasey (1,2), McEwen Khundi (3), Rebecca Nzawa Soko (2), Rachael M Burke (1,2), Marriott Nliwasa (4), Hussein Twabi (4), James A Mpunga (5), Katherine Fielding (1), Peter MacPherson (3,6), Elizabeth L Corbett (2)
 
 **Affiliations:**
 
-(1) London School of Hygiene & Tropical Medicine, Dept of Infectious Disease Epidemiology
+(1) London School of Hygiene & Tropical Medicine, London, UK.
 
-(2) London School of Hygiene & Tropical Medicine, Dept of Clinical Research
+(2) Malawi-Liverpool-Wellcome Trust Clinical Research Programme, Blantyre, Malawi.
 
-(3) Malawi-Liverpool-Wellcome Trust Clinical Research Programme
+(3) African Institute for Development Policy, Lilongwe, Malawi.
 
-(4) University of Malawi College of Medicine, Helse Nord Tuberculosis Initiative
+(4) Kamuzu University of Health Sciences, Blantyre, Malawi.
 
-(5) Malawi Ministry of Health, National Tuberculosis Control Programme
+(5) National TB and Leprosy Elimination Programme, Ministry of Health, Lilongwe, Malawi.
 
-(6) Liverpool School of Tropical Medicine, Department of Clinical Sciences
+(6) Liverpool School of Tropical Medicine, Liverpool, UK.
+
+(7) University of Glasgow, Glasgow, UK.
 
 \*Corresponding author: [emily.nightingale\@lshtm.ac.uk](mailto:emily.nightingale@lshtm.ac.uk){.email}
 
